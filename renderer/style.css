@@ -1,0 +1,47 @@
+/* style.css —— GreenVibe 原创样式：清爽明亮、大留白、大海报墙
+   风格灵感仅为“干净清爽”这一通用方向，不复制任何第三方客户端的素材、截图或代码。 */
+:root {
+  --bg:#f7faf7; --card:#ffffff; --text:#1f2937; --muted:#6b7280;
+  --accent:#16a34a; --accent-soft:#dcfce7; --line:#e5e7eb;
+}
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--text); font-family:system-ui,"Microsoft YaHei","PingFang SC",sans-serif; font-size:16px; line-height:1.6; }
+.topbar { display:flex; justify-content:space-between; align-items:center; gap:24px; padding:16px 28px; background:#ffffff; border-bottom:1px solid var(--line); position:sticky; top:0; z-index:10; }
+.logo { display:flex; align-items:center; gap:10px; font-size:22px; font-weight:700; color:#14532d; }
+.logo img { width:36px; height:36px; border-radius:10px; }
+.tag { font-size:12px; color:var(--muted); font-weight:400; }
+.top-controls, .row, .form { display:flex; gap:12px; flex-wrap:wrap; align-items:center; }
+.tabs { display:flex; gap:8px; padding:16px 28px 4px; }
+.tabs button { padding:10px 18px; border:0; border-radius:999px; background:#ffffff; color:var(--text); cursor:pointer; border:1px solid var(--line); font-size:15px; }
+.tabs button.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+main { padding:8px 28px 48px; max-width:1400px; margin:0 auto; }
+.tab { display:none; }
+.tab.active { display:block; }
+h2 { font-size:20px; margin:28px 0 12px; font-weight:700; }
+.hint { color:var(--muted); font-size:14px; }
+.grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:20px; }
+.card { background:var(--card); border:1px solid var(--line); border-radius:16px; overflow:hidden; cursor:pointer; box-shadow:0 1px 3px rgba(0,0,0,.05); }
+.card:hover { box-shadow:0 8px 24px rgba(22,163,74,.12); transform:translateY(-2px); transition:.15s; }
+.card .poster { height:280px; display:flex; align-items:center; justify-content:center; background:linear-gradient(135deg,#dcfce7,#bbf7d0); font-weight:700; text-align:center; padding:12px; color:#14532d; }
+.card .poster img { width:100%; height:100%; object-fit:cover; }
+.card .meta { padding:12px 14px 14px; }
+.card .meta small { color:var(--muted); }
+input, select, button { padding:10px 12px; border-radius:10px; border:1px solid var(--line); background:#ffffff; color:var(--text); font-size:15px; }
+button { cursor:pointer; background:var(--accent); border-color:var(--accent); color:#fff; }
+button:hover { filter:brightness(1.05); }
+.form { flex-direction:column; align-items:stretch; max-width:640px; gap:12px; }
+.modal { position:fixed; inset:0; background:rgba(15,23,42,.45); display:flex; align-items:center; justify-content:center; z-index:50; padding:20px; }
+.modal.hidden { display:none; }
+.modal-box { background:#ffffff; max-width:760px; width:92%; max-height:90vh; overflow:auto; padding:24px; border-radius:20px; position:relative; box-shadow:0 20px 50px rgba(0,0,0,.15); }
+.player-box { background:#ffffff; width:96%; max-width:1100px; max-height:95vh; overflow:auto; padding:16px; border-radius:20px; }
+.video-wrap { position:relative; background:#000; border-radius:12px; overflow:hidden; }
+video { width:100%; max-height:60vh; background:#000; display:block; }
+.subtitle { position:absolute; left:0; right:0; text-align:center; font-weight:700; text-shadow:1px 1px 2px #000; pointer-events:none; }
+.subtitle.primary { bottom:60px; }
+.subtitle.secondary { bottom:100px; color:#fde68a; }
+.danmaku-layer { position:absolute; inset:0; overflow:hidden; pointer-events:none; }
+.danmaku { position:absolute; white-space:nowrap; font-weight:700; text-shadow:1px 1px 2px #000; animation:danmaku-move linear forwards; }
+@keyframes danmaku-move { from { left:100%; } to { left:-100%; } }
+.player-controls { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:14px; }
+.player-controls button { background:#f0fdf4; color:#14532d; border-color:#bbf7d0; }
+.close { position:absolute; right:12px; top:12px; }

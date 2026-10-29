@@ -1,0 +1,488 @@
+// app.js —— 原创渲染逻辑，走公开 Emby/Jellyfin REST API
+// 安全原则：服务器地址、账号、token 只存本机 localStorage，只发给用户自己的服务器。
+// 不内置任何第三方客户端代码、密钥、弹幕源、Trakt key。
+(function () {
+  'use strict';
+  var LS_SERVERS = 'greenvibe.servers';
+  var LS_SETTINGS = 'greenvibe.settings';
+  var LS_SKIP = 'greenvibe.skipPoints';
+
+  function loadJson(key, fallback) { try { return JSON.parse(localStorage.getItem(key) || 'null') || fallback; } catch (e) { return fallback; } }
+  function saveJson(key, val) { localStorage.setItem(key, JSON.stringify(val)); }
+
+  var state = {
+    servers: loadJson(LS_SERVERS, []),
+    settings: Object.assign({ mpvPath: 'mpv', anime4kPath: '', hdr: false, extPlayerPath: '', danmakuUrl: '', skipIntroSec: 85, subSize: 22, subBottom: 60, subColor: '#ffffff', traktClientId: '', traktToken: '', webdavUrl: '', webdavUser: '', webdavPass: '' }, loadJson(LS_SETTINGS, {})),
+    skipPoints: loadJson(LS_SKIP, {}),
+    demo: false,
+    currentServerIndex: 0,
+    currentItem: null,
+    currentSources: [],
+    currentSourceIndex: 0,
+    nextEpisode: null,
+    nextPreloaded: null,
+    primaryCues: [], secondaryCues: [], danmakuItems: [],
+    progressTimer: null,
+    sessionId: 'greenvibe-' + Math.random().toString(36).slice(2, 10)
+  };
+
+  function $(id) { return document.getElementById(id); }
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  function ticksToSec(t) { return (t || 0) / 10000000; }
+  function secToTicks(s) { return Math.round((s || 0) * 10000000); }
+
+  // ---------- 演示数据：不用服务器也能看界面 ----------
+  var DEMO_ITEMS = [
+    { Id: 'demo-m1', Name: '演示电影：星空之下', Type: 'Movie', ProductionYear: 2024, Overview: '这是一条演示数据，用来在没有服务器时看界面。连上真服务器后会被真数据替换。', UserData: { PlaybackPositionTicks: secToTicks(1234) }, MediaSources: [{ Id: 'ms1', Name: '1080p', MediaStreams: [{ Type: 'Video', Codec: 'h264' }, { Type: 'Audio', Codec: 'aac', Language: '中文' }] }], demoVideo: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4' },
+    { Id: 'demo-s1', Name: '演示剧集：第 1 集', Type: 'Episode', SeriesName: '演示剧集', ParentIndexNumber: 1, IndexNumber: 1, Overview: '演示剧集单集。', UserData: {}, MediaSources: [{ Id: 'ms2', Name: '720p', MediaStreams: [] }], demoVideo: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4' },
+    { Id: 'demo-s2', Name: '演示剧集：第 2 集', Type: 'Episode', SeriesName: '演示剧集', ParentIndexNumber: 1, IndexNumber: 2, Overview: '下一集演示，播放第 1 集时会预加载这一集的信息。', UserData: {}, MediaSources: [{ Id: 'ms3', Name: '720p', MediaStreams: [] }], demoVideo: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4' }
+  ];
+
+  function currentServer() {
+    var s = state.servers[state.currentServerIndex];
+    if (!s) return null;
+    // 多线路：当前线路 URL 优先
+    var lines = s.lines || [];
+    var url = s.url;
+    if (typeof s.activeLine === 'number' && lines[s.activeLine]) url = lines[s.activeLine];
+    return Object.assign({}, s, { baseUrl: String(url).replace(/\/$/, '') });
+  }
+
+  function authHeader(server) {
+    var token = server.token || server.apiKey || '';
+    return 'MediaBrowser Client="GreenVibe", Device="Windows", DeviceId="' + state.sessionId + '", Version="0.1.0"' + (token ? ', Token="' + token + '"' : '');
+  }
+
+  async function api(server, path, opts) {
+    opts = opts || {};
+    var res = await fetch(server.baseUrl + path, {
+      method: opts.method || 'GET',
+      headers: Object.assign({ 'X-Emby-Authorization': authHeader(server), 'Content-Type': 'application/json' }, opts.headers || {}),
+      body: opts.body ? JSON.stringify(opts.body) : undefined
+    });
+    if (!res.ok) throw new Error('服务器返回 ' + res.status + '：' + path);
+    var text = await res.text();
+    try { return JSON.parse(text); } catch (e) { return text; }
+  }
+
+  function imageUrl(server, item, type) {
+    if (!server) return '';
+    return server.baseUrl + '/Items/' + item.Id + '/Images/' + (type || 'Primary') + '?maxWidth=400&api_key=' + encodeURIComponent(server.token || server.apiKey || '');
+  }
+
+  function renderGrid(el, items, server) {
+    el.innerHTML = '';
+    (items || []).forEach(function (it) {
+      var div = document.createElement('div');
+      div.className = 'card';
+      var poster = it.demoVideo ? '<div class="poster">' + esc(it.Name) + '</div>' :
+        '<div class="poster"><img src="' + esc(imageUrl(server, it)) + '" alt="" onerror="this.parentNode.textContent=\'' + esc(it.Name) + '\'"></div>';
+      var pos = it.UserData && it.UserData.PlaybackPositionTicks ? ' · 已看 ' + Math.round(ticksToSec(it.UserData.PlaybackPositionTicks) / 60) + ' 分钟' : '';
+      div.innerHTML = poster + '<div class="meta"><b>' + esc(it.Name) + '</b><br><small>' + esc(it.Type || '') + (it.ProductionYear ? ' · ' + it.ProductionYear : '') + pos + '</small></div>';
+      div.onclick = function () { openDetail(it, server); };
+      el.appendChild(div);
+    });
+    if (!items || !items.length) el.innerHTML = '<p class="hint">暂无内容（演示模式请打开演示开关；真服务器请先在设置里添加并登录）。</p>';
+  }
+
+  // ---------- 服务器管理 ----------
+  function refreshServerUI() {
+    var sel = $('serverSelect'); sel.innerHTML = '';
+    state.servers.forEach(function (s, i) {
+      var o = document.createElement('option'); o.value = i; o.textContent = s.name + (s.private ? '（私密）' : ''); sel.appendChild(o);
+    });
+    sel.value = state.currentServerIndex;
+    var lineSel = $('lineSelect'); lineSel.innerHTML = '';
+    var srv = state.servers[state.currentServerIndex];
+    var lines = (srv && srv.lines) || [];
+    if (!lines.length) { var o0 = document.createElement('option'); o0.textContent = '默认线路'; lineSel.appendChild(o0); }
+    lines.forEach(function (l, i) { var o = document.createElement('option'); o.value = i; o.textContent = l; lineSel.appendChild(o); });
+    if (srv) lineSel.value = (typeof srv.activeLine === 'number' ? srv.activeLine : '');
+    var list = $('serverList'); list.innerHTML = '';
+    state.servers.forEach(function (s, i) {
+      var d = document.createElement('div');
+      d.innerHTML = '<b>' + esc(s.name) + '</b> ' + esc(s.url) + (s.private ? '（私密）' : '') + ' ';
+      var del = document.createElement('button'); del.textContent = '删除'; del.onclick = function () { state.servers.splice(i, 1); saveJson(LS_SERVERS, state.servers); refreshServerUI(); };
+      d.appendChild(del); list.appendChild(d);
+    });
+    // 设置页回填
+    $('mpvPath').value = state.settings.mpvPath || '';
+    $('anime4kPath').value = state.settings.anime4kPath || '';
+    $('hdrToggle').checked = !!state.settings.hdr;
+    $('extPlayerPath').value = state.settings.extPlayerPath || '';
+    $('danmakuUrl').value = state.settings.danmakuUrl || '';
+    $('skipIntroSec').value = state.settings.skipIntroSec || 85;
+    $('subSize').value = state.settings.subSize || 22;
+    $('subBottom').value = state.settings.subBottom || 60;
+    $('subColor').value = state.settings.subColor || '#ffffff';
+    $('traktClientId').value = state.settings.traktClientId || '';
+    $('traktToken').value = state.settings.traktToken || '';
+    $('webdavUrl').value = state.settings.webdavUrl || '';
+    $('webdavUser').value = state.settings.webdavUser || '';
+    $('webdavPass').value = state.settings.webdavPass || '';
+    applySubtitleStyle();
+  }
+
+  function applySubtitleStyle() {
+    var p = $('subPrimary'), s = $('subSecondary');
+    [p, s].forEach(function (el) { el.style.fontSize = (state.settings.subSize || 22) + 'px'; el.style.color = state.settings.subColor || '#ffffff'; });
+    p.style.bottom = (state.settings.subBottom || 60) + 'px';
+    s.style.bottom = ((state.settings.subBottom || 60) + 40) + 'px';
+  }
+
+  function saveSettingsFromForm() {
+    state.settings.mpvPath = $('mpvPath').value || 'mpv';
+    state.settings.anime4kPath = $('anime4kPath').value || '';
+    state.settings.hdr = $('hdrToggle').checked;
+    state.settings.extPlayerPath = $('extPlayerPath').value || '';
+    state.settings.danmakuUrl = $('danmakuUrl').value || '';
+    state.settings.skipIntroSec = Number($('skipIntroSec').value) || 85;
+    state.settings.subSize = Number($('subSize').value) || 22;
+    state.settings.subBottom = Number($('subBottom').value) || 60;
+    state.settings.subColor = $('subColor').value || '#ffffff';
+    state.settings.traktClientId = $('traktClientId').value || '';
+    state.settings.traktToken = $('traktToken').value || '';
+    state.settings.webdavUrl = $('webdavUrl').value || '';
+    state.settings.webdavUser = $('webdavUser').value || '';
+    state.settings.webdavPass = $('webdavPass').value || '';
+    saveJson(LS_SETTINGS, state.settings);
+    applySubtitleStyle();
+  }
+
+  async function loginServer(srv) {
+    if (srv.apiKey) { srv.token = srv.apiKey; return srv; }
+    var server = Object.assign({}, srv, { baseUrl: String(srv.url).replace(/\/$/, '') });
+    var data = await api(server, '/Users/AuthenticateByName', { method: 'POST', body: { Username: srv.username, Pw: srv.password } });
+    srv.userId = data.User && data.User.Id;
+    srv.token = data.AccessToken;
+    return srv;
+  }
+
+  // ---------- 浏览 / 搜索 ----------
+  async function loadHome() {
+    if (state.demo) {
+      renderGrid($('resumeGrid'), DEMO_ITEMS.filter(function (x) { return x.UserData && x.UserData.PlaybackPositionTicks; }), null);
+      renderGrid($('latestGrid'), DEMO_ITEMS, null);
+      return;
+    }
+    var srv = currentServer();
+    if (!srv || !srv.token) { renderGrid($('resumeGrid'), [], srv); renderGrid($('latestGrid'), [], srv); return; }
+    try {
+      // 聚合视界：逐个非私密服务器取继续观看 + 最新，再汇总
+      var resumeAll = [], latestAll = [];
+      for (var i = 0; i < state.servers.length; i++) {
+        var s0 = state.servers[i]; if (s0.private) continue;
+        var sv = Object.assign({}, s0, { baseUrl: String(s0.url).replace(/\/$/, '') });
+        try {
+          var r = await api(sv, '/Users/' + sv.userId + '/Items/Resume?Limit=10&Fields=PrimaryImageAspectRatio,Overview');
+          var l = await api(sv, '/Users/' + sv.userId + '/Items/Latest?Limit=10&Fields=PrimaryImageAspectRatio,Overview');
+          (r.Items || []).forEach(function (x) { x._server = sv; resumeAll.push(x); });
+          (l || []).forEach(function (x) { x._server = sv; latestAll.push(x); });
+        } catch (e) { /* 单个服务器失败不影响其他服务器 */ }
+      }
+      renderGrid($('resumeGrid'), resumeAll, srv);
+      renderGrid($('latestGrid'), latestAll, srv);
+    } catch (e) {
+      $('resumeGrid').innerHTML = '<p class="hint">加载失败：' + esc(e.message) + '（请检查服务器地址和登录状态）</p>';
+    }
+  }
+
+  async function loadLibrary() {
+    if (state.demo) { renderGrid($('libGrid'), DEMO_ITEMS, null); return; }
+    var srv = currentServer(); if (!srv || !srv.token) { renderGrid($('libGrid'), [], srv); return; }
+    var type = $('libType').value;
+    var q = '/Users/' + srv.userId + '/Items?Recursive=true&Limit=50&Fields=PrimaryImageAspectRatio,Overview,ProductionYear&SortBy=SortName' + (type ? '&IncludeItemTypes=' + type : '');
+    try { var data = await api(srv, q); renderGrid($('libGrid'), data.Items || [], srv); }
+    catch (e) { $('libGrid').innerHTML = '<p class="hint">加载失败：' + esc(e.message) + '</p>'; }
+  }
+
+  async function doSearch(aggregated) {
+    var term = $('searchInput').value.trim(); if (!term) return;
+    if (state.demo) { renderGrid($('searchGrid'), DEMO_ITEMS.filter(function (x) { return x.Name.indexOf(term) >= 0; }), null); return; }
+    var targets = aggregated ? state.servers.filter(function (s) { return !s.private; }) : [state.servers[state.currentServerIndex]];
+    var all = [];
+    for (var i = 0; i < targets.length; i++) {
+      var sv = Object.assign({}, targets[i], { baseUrl: String(targets[i].url).replace(/\/$/, '') });
+      if (!sv.token) continue;
+      try { var d = await api(sv, '/Users/' + sv.userId + '/Items?Recursive=true&SearchTerm=' + encodeURIComponent(term) + '&Limit=30&Fields=PrimaryImageAspectRatio,Overview'); (d.Items || []).forEach(function (x) { x._server = sv; all.push(x); }); } catch (e) {}
+    }
+    renderGrid($('searchGrid'), all, currentServer());
+  }
+
+  // ---------- 详情 ----------
+  function openDetail(item, server) {
+    state.currentItem = item;
+    var srv = server || currentServer();
+    var body = $('detailBody');
+    var poster = item.demoVideo ? '' : '<img src="' + esc(imageUrl(srv, item)) + '" style="max-width:240px" onerror="this.remove()">';
+    body.innerHTML = poster + '<h2>' + esc(item.Name) + '</h2><p>' + esc(item.Overview || '暂无简介') + '</p>' +
+      '<p>类型：' + esc(item.Type || '') + (item.ProductionYear ? ' · ' + item.ProductionYear : '') + '</p>' +
+      '<button id="detailPlay">▶ 播放</button> <button id="detailResume">从上次位置继续</button>';
+    $('detailModal').classList.remove('hidden');
+    $('detailPlay').onclick = function () { $('detailModal').classList.add('hidden'); startPlayback(item, srv, 0); };
+    $('detailResume').onclick = function () { $('detailModal').classList.add('hidden'); startPlayback(item, srv, ticksToSec(item.UserData && item.UserData.PlaybackPositionTicks)); };
+  }
+
+  // ---------- 字幕解析：SRT / VTT ----------
+  function parseTimecode(tc) {
+    var m = tc.trim().match(/(\d+):(\d+):([\d.,]+)/);
+    if (!m) return 0;
+    return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3].replace(',', '.'));
+  }
+  function parseSubtitleText(text) {
+    var cues = [];
+    var blocks = text.replace(/\r\n/g, '\n').replace(/^WEBVTT[^\n]*\n/, '').split(/\n\s*\n/);
+    blocks.forEach(function (b) {
+      var lines = b.trim().split('\n'); if (!lines.length) return;
+      var ti = lines.findIndex(function (l) { return l.indexOf('-->') >= 0; });
+      if (ti < 0) return;
+      var times = lines[ti].split('-->');
+      cues.push({ start: parseTimecode(times[0]), end: parseTimecode(times[1]), text: lines.slice(ti + 1).join('<br>') });
+    });
+    return cues;
+  }
+  function cueAt(cues, t) {
+    for (var i = 0; i < cues.length; i++) { if (t >= cues[i].start && t <= cues[i].end) return cues[i].text; }
+    return '';
+  }
+
+  // ---------- 弹幕解析：JSON [{time,text}] 或 B站 XML <d p="秒,..."> ----
+  function parseDanmakuText(text) {
+    try { var j = JSON.parse(text); if (Array.isArray(j)) return j.map(function (x) { return { time: Number(x.time || x.t || 0), text: String(x.text || x.m || '') }; }); } catch (e) {}
+    var items = [];
+    var re = /<d p="([\d.]+)[^"]*">([^<]+)<\/d>/g, m;
+    while ((m = re.exec(text)) !== null) items.push({ time: Number(m[1]), text: m[2] });
+    return items;
+  }
+
+  // ---------- 播放 ----------
+  async function fetchPlaybackInfo(item, server) {
+    if (item.demoVideo) return { MediaSources: item.MediaSources || [], demoVideo: item.demoVideo };
+    var info = await api(server, '/Items/' + item.Id + '/PlaybackInfo', { method: 'POST', body: { UserId: server.userId, MaxStreamingBitrate: 120000000 } });
+    return info;
+  }
+
+  function streamUrl(item, server, source, direct) {
+    if (item.demoVideo) return item.demoVideo;
+    var base = server.baseUrl;
+    if (direct) return base + '/Videos/' + item.Id + '/stream?Static=true&MediaSourceId=' + encodeURIComponent(source.Id) + '&api_key=' + encodeURIComponent(server.token || '');
+    return base + '/Videos/' + item.Id + '/master.m3u8?MediaSourceId=' + encodeURIComponent(source.Id) + '&api_key=' + encodeURIComponent(server.token || '');
+  }
+
+  async function preloadNextEpisode(item, server) {
+    state.nextEpisode = null; state.nextPreloaded = null;
+    if (item.Type !== 'Episode' || !item.SeriesId) return;
+    try {
+      var list = await api(server, '/Users/' + server.userId + '/Items?ParentId=' + item.SeriesId + '&Recursive=true&IncludeItemTypes=Episode&Fields=IndexNumber,ParentIndexNumber&SortBy=IndexNumber');
+      var eps = list.Items || [];
+      var idx = eps.findIndex(function (x) { return x.Id === item.Id; });
+      if (idx >= 0 && eps[idx + 1]) {
+        state.nextEpisode = eps[idx + 1];
+        state.nextPreloaded = await fetchPlaybackInfo(eps[idx + 1], server); // 预加载下一集播放信息
+      }
+    } catch (e) {}
+    // 演示模式：按演示数组找下一集
+    if (state.demo) {
+      var di = DEMO_ITEMS.findIndex(function (x) { return x.Id === item.Id; });
+      if (di >= 0 && DEMO_ITEMS[di + 1]) { state.nextEpisode = DEMO_ITEMS[di + 1]; state.nextPreloaded = { demoVideo: DEMO_ITEMS[di + 1].demoVideo }; }
+    }
+  }
+
+  async function startPlayback(item, server, startSeconds) {
+    state.currentItem = item;
+    var srv = server || currentServer();
+    var video = $('videoEl');
+    $('playerTitle').textContent = item.Name || '播放中';
+    $('playerModal').classList.remove('hidden');
+    $('playerStatus').textContent = '正在获取片源…';
+    try {
+      var info = await fetchPlaybackInfo(item, srv);
+      state.currentSources = info.MediaSources || item.MediaSources || [];
+      var sel = $('sourceSelect'); sel.innerHTML = '';
+      state.currentSources.forEach(function (s, i) { var o = document.createElement('option'); o.value = i; o.textContent = s.Name || ('片源 ' + (i + 1)); sel.appendChild(o); });
+      var audioSel = $('audioSelect'); audioSel.innerHTML = '';
+      var audios = (state.currentSources[0] && state.currentSources[0].MediaStreams || []).filter(function (x) { return x.Type === 'Audio'; });
+      audios.forEach(function (a, i) { var o = document.createElement('option'); o.value = i; o.textContent = (a.DisplayTitle || a.Codec || '音轨') + (a.Language ? ' · ' + a.Language : ''); audioSel.appendChild(o); });
+      // 字幕轨
+      var subs = (state.currentSources[0] && state.currentSources[0].MediaStreams || []).filter(function (x) { return x.Type === 'Subtitle'; });
+      var fillSub = function (el) { el.innerHTML = '<option value="">无</option>'; subs.forEach(function (s, i) { var o = document.createElement('option'); o.value = i; o.textContent = (s.DisplayTitle || s.Codec || '字幕') + (s.Language ? ' · ' + s.Language : ''); el.appendChild(o); }); };
+      fillSub($('subPrimarySelect')); fillSub($('subSecondarySelect'));
+      state.currentSubs = subs;
+      var src = state.currentSources[0];
+      var url = info.demoVideo || streamUrl(item, srv, src, true);
+      video.src = url;
+      video.currentTime = startSeconds || 0;
+      video.play().catch(function () {});
+      $('playerStatus').textContent = '已加载片源：' + (src ? (src.Name || '') : '') + '（直连优先，播不出来请在片源里换一个，或点“用 mpv 播放”）';
+      await preloadNextEpisode(item, srv);
+      if (state.nextEpisode) $('playerStatus').textContent += ' · 下一集已预加载：' + state.nextEpisode.Name;
+      // 弹幕来源
+      if (state.settings.danmakuUrl) { try { var dt = await (await fetch(state.settings.danmakuUrl)).text(); state.danmakuItems = parseDanmakuText(dt); } catch (e) {} }
+      // 进度上报：每 10 秒 + 暂停/关闭时上报
+      clearInterval(state.progressTimer);
+      state.progressTimer = setInterval(function () { reportProgress(false); }, 10000);
+    } catch (e) {
+      $('playerStatus').textContent = '播放失败：' + e.message;
+    }
+  }
+
+  async function reportProgress(stopped) {
+    var video = $('videoEl'); var item = state.currentItem; var srv = currentServer();
+    if (!item || state.demo || !srv || !srv.token) return;
+    try {
+      await api(srv, '/Sessions/Playing/' + (stopped ? 'Stopped' : 'Progress'), { method: 'POST', body: { ItemId: item.Id, PositionTicks: secToTicks(video.currentTime || 0), IsPaused: video.paused } });
+    } catch (e) {}
+  }
+
+  function closePlayer() {
+    var video = $('videoEl');
+    reportProgress(true);
+    clearInterval(state.progressTimer);
+    video.pause(); video.removeAttribute('src'); video.load();
+    $('playerModal').classList.add('hidden');
+  }
+
+  // ---------- 事件绑定 ----------
+  document.querySelectorAll('.tabs button').forEach(function (b) {
+    b.onclick = function () {
+      document.querySelectorAll('.tabs button').forEach(function (x) { x.classList.remove('active'); });
+      document.querySelectorAll('.tab').forEach(function (x) { x.classList.remove('active'); });
+      b.classList.add('active'); $('tab-' + b.dataset.tab).classList.add('active');
+      if (b.dataset.tab === 'home') loadHome();
+      if (b.dataset.tab === 'library') loadLibrary();
+    };
+  });
+  $('serverSelect').onchange = function () { state.currentServerIndex = Number(this.value); refreshServerUI(); loadHome(); };
+  $('lineSelect').onchange = function () {
+    var srv = state.servers[state.currentServerIndex]; if (!srv) return;
+    srv.activeLine = Number(this.value); saveJson(LS_SERVERS, state.servers); refreshServerUI(); loadHome();
+  };
+  $('demoToggle').onchange = function () { state.demo = this.checked; loadHome(); loadLibrary(); };
+  $('refreshLib').onclick = loadLibrary;
+  $('searchBtn').onclick = function () { doSearch(false); };
+  $('aggSearchBtn').onclick = function () { doSearch(true); };
+  $('detailClose').onclick = function () { $('detailModal').classList.add('hidden'); };
+  $('playerClose').onclick = closePlayer;
+
+  $('addServerBtn').onclick = async function () {
+    var srv = { name: $('srvName').value.trim() || 'Emby 服务器', url: $('srvUrl').value.trim(), username: $('srvUser').value.trim(), password: $('srvPass').value, apiKey: $('srvApiKey').value.trim(), private: $('srvPrivate').checked, lines: $('srvLines').value.split(',').map(function (x) { return x.trim(); }).filter(Boolean), activeLine: 0 };
+    if (!srv.url) { alert('请先填服务器地址'); return; }
+    try { await loginServer(srv); state.servers.push(srv); saveJson(LS_SERVERS, state.servers); state.currentServerIndex = state.servers.length - 1; refreshServerUI(); $('settingsStatus').textContent = '登录成功，已添加服务器。'; loadHome(); }
+    catch (e) { $('settingsStatus').textContent = '登录失败：' + e.message + '（地址、用户名、密码对吗？）'; }
+  };
+  $('saveServersBtn').onclick = function () { saveSettingsFromForm(); $('settingsStatus').textContent = '设置已保存到本机。'; };
+
+  // 播放器控制
+  $('resumeBtn').onclick = function () { var item = state.currentItem; if (item && item.UserData) $('videoEl').currentTime = ticksToSec(item.UserData.PlaybackPositionTicks); };
+  $('skipIntroBtn').onclick = function () { $('videoEl').currentTime += (state.settings.skipIntroSec || 85); };
+  $('markIntroBtn').onclick = function () { var item = state.currentItem; if (!item) return; state.skipPoints[item.Id] = $('videoEl').currentTime; saveJson(LS_SKIP, state.skipPoints); $('playerStatus').textContent = '已把当前位置记为该片的片头结束，下次点“跳过片头”会跳到这里。'; };
+  // 注意：上面 mark 后，跳过按钮仍按秒数；若已记点，优先跳到记点
+  $('skipIntroBtn').addEventListener('click', function () {
+    var item = state.currentItem; if (item && state.skipPoints[item.Id] != null) $('videoEl').currentTime = state.skipPoints[item.Id];
+  });
+  $('skipOutroBtn').onclick = function () { var v = $('videoEl'); if (v.duration) v.currentTime = Math.max(0, v.duration - 30); };
+  $('nextEpBtn').onclick = function () { if (state.nextEpisode) { var srv = currentServer(); closePlayer(); startPlayback(state.nextEpisode, srv, 0); } else { alert('没有下一集，或下一集还没加载出来'); } };
+  $('sourceSelect').onchange = function () {
+    var item = state.currentItem; var srv = currentServer(); var idx = Number(this.value); state.currentSourceIndex = idx;
+    var src = state.currentSources[idx]; if (!src) return;
+    var v = $('videoEl'); var t = v.currentTime; v.src = streamUrl(item, srv, src, true); v.currentTime = t; v.play().catch(function () {});
+  };
+  $('mpvBtn').onclick = async function () {
+    var item = state.currentItem; var srv = currentServer(); var v = $('videoEl');
+    if (!window.electronAPI) { $('playerStatus').textContent = '网页预览模式没有 mpv 桥接，请在 Electron 里打开本应用再点这个按钮。'; return; }
+    var src = state.currentSources[state.currentSourceIndex] || {};
+    var res = await window.electronAPI.playMpv({ url: streamUrl(item, srv, src, true), startSeconds: Math.floor(v.currentTime || 0), mpvPath: state.settings.mpvPath, anime4kShader: state.settings.anime4kPath, hdrToneMapping: state.settings.hdr, title: item.Name });
+    $('playerStatus').textContent = res.ok ? '已交给 mpv 播放（mpv 窗口关闭后会回到这里）' : 'mpv 启动失败：' + res.error + '（请检查 mpv 路径是否正确）';
+  };
+  $('extBtn').onclick = async function () {
+    var item = state.currentItem; var srv = currentServer(); var src = state.currentSources[state.currentSourceIndex] || {};
+    var url = streamUrl(item, srv, src, true);
+    if (!window.electronAPI) { try { await navigator.clipboard.writeText(url); $('playerStatus').textContent = '已把播放地址复制到剪贴板，请粘贴到 PotPlayer / VLC 里打开。'; } catch (e) { $('playerStatus').textContent = '播放地址：' + url; } return; }
+    var res = await window.electronAPI.launchExternal({ exePath: state.settings.extPlayerPath, url: url });
+    $('playerStatus').textContent = res.ok ? '已交给外部播放器' : '外部播放器启动失败：' + res.error;
+  };
+  $('downloadBtn').onclick = async function () {
+    var item = state.currentItem; var srv = currentServer(); var src = state.currentSources[state.currentSourceIndex] || {};
+    var url = streamUrl(item, srv, src, true);
+    if (window.electronAPI) { var res = await window.electronAPI.downloadVideo({ url: url, filename: (item.Name || 'video') + '.mp4' }); $('playerStatus').textContent = res.ok ? '已开始下载到：' + res.path : '下载失败：' + res.error; }
+    else { var a = document.createElement('a'); a.href = url; a.download = (item.Name || 'video') + '.mp4'; a.click(); $('playerStatus').textContent = '已触发浏览器下载（服务器允许时才有效）。'; }
+  };
+
+  // 字幕：主/次选择（从服务器取字幕文件并做自定义叠加显示）
+  async function loadSubtitleTrack(index, isSecondary) {
+    var item = state.currentItem; var srv = currentServer(); var src = state.currentSources[state.currentSourceIndex] || {};
+    var sub = (state.currentSubs || [])[index]; if (!sub) { if (isSecondary) state.secondaryCues = []; else state.primaryCues = []; return; }
+    try {
+      // Emby 字幕流地址：优先用 DeliveryUrl，否则按常见格式拼
+      var url = sub.DeliveryUrl ? srv.baseUrl + sub.DeliveryUrl : srv.baseUrl + '/Videos/' + item.Id + '/' + src.Id + '/Subtitles/' + sub.Index + '/0/Stream.' + (sub.Codec || 'srt') + '?api_key=' + encodeURIComponent(srv.token || '');
+      var text = await (await fetch(url)).text();
+      var cues = parseSubtitleText(text);
+      if (isSecondary) state.secondaryCues = cues; else state.primaryCues = cues;
+    } catch (e) { $('playerStatus').textContent = '字幕加载失败：' + e.message; }
+  }
+  $('subPrimarySelect').onchange = function () { loadSubtitleTrack(Number(this.value), false); };
+  $('subSecondarySelect').onchange = function () { loadSubtitleTrack(Number(this.value), true); };
+  $('localSubFile').onchange = async function () {
+    var f = this.files[0]; if (!f) return;
+    var text = await f.text(); state.primaryCues = parseSubtitleText(text);
+    $('playerStatus').textContent = '已加载本地字幕：' + f.name + '（作为主字幕显示）';
+  };
+  $('localDanmakuFile').onchange = async function () {
+    var f = this.files[0]; if (!f) return;
+    var text = await f.text(); state.danmakuItems = parseDanmakuText(text);
+    $('playerStatus').textContent = '已加载本地弹幕：' + f.name + '，共 ' + state.danmakuItems.length + ' 条';
+  };
+
+  // 视频时间更新：字幕 + 弹幕
+  var lastDanmakuSecond = -1;
+  $('videoEl').addEventListener('timeupdate', function () {
+    var t = this.currentTime;
+    $('subPrimary').innerHTML = cueAt(state.primaryCues, t);
+    $('subSecondary').innerHTML = cueAt(state.secondaryCues, t);
+    var sec = Math.floor(t);
+    if (sec !== lastDanmakuSecond) {
+      lastDanmakuSecond = sec;
+      state.danmakuItems.filter(function (d) { return Math.floor(d.time) === sec; }).slice(0, 5).forEach(function (d) {
+        var el = document.createElement('div'); el.className = 'danmaku'; el.textContent = d.text; el.style.top = (Math.random() * 60) + '%'; el.style.animationDuration = '8s'; el.style.opacity = '0.9';
+        $('danmakuLayer').appendChild(el); setTimeout(function () { el.remove(); }, 8500);
+      });
+    }
+  });
+  $('videoEl').addEventListener('ended', function () { if (state.nextEpisode) { var srv = currentServer(); closePlayer(); startPlayback(state.nextEpisode, srv, 0); } });
+
+  // Trakt / WebDAV：只用用户自己的凭据
+  $('traktSyncBtn').onclick = async function () {
+    saveSettingsFromForm();
+    if (!state.settings.traktClientId || !state.settings.traktToken) { $('settingsStatus').textContent = '请先填你自己的 Trakt Client ID 和 Access Token。'; return; }
+    try {
+      var res = await fetch('https://api.trakt.tv/sync/history', { method: 'GET', headers: { 'trakt-api-key': state.settings.traktClientId, 'trakt-api-version': '2', 'Authorization': 'Bearer ' + state.settings.traktToken } });
+      $('settingsStatus').textContent = res.ok ? 'Trakt 连接成功（已看同步接口已通，完整同步按 Trakt 返回的历史条目处理）。' : 'Trakt 返回 ' + res.status + '，请检查 Client ID / Token。';
+    } catch (e) { $('settingsStatus').textContent = 'Trakt 连接失败：' + e.message; }
+  };
+  $('webdavBackupBtn').onclick = async function () {
+    saveSettingsFromForm();
+    var base = (state.settings.webdavUrl || '').replace(/\/$/, '');
+    if (!base) { $('settingsStatus').textContent = '请先填 WebDAV 地址。'; return; }
+    try {
+      var res = await fetch(base + '/greenvibe-settings.json', { method: 'PUT', headers: { 'Authorization': 'Basic ' + btoa(state.settings.webdavUser + ':' + state.settings.webdavPass), 'Content-Type': 'application/json' }, body: JSON.stringify({ servers: state.servers, settings: state.settings }) });
+      $('settingsStatus').textContent = res.ok ? '备份成功，已写到你的 WebDAV。' : '备份失败，WebDAV 返回 ' + res.status;
+    } catch (e) { $('settingsStatus').textContent = '备份失败：' + e.message; }
+  };
+  $('webdavRestoreBtn').onclick = async function () {
+    saveSettingsFromForm();
+    var base = (state.settings.webdavUrl || '').replace(/\/$/, '');
+    if (!base) { $('settingsStatus').textContent = '请先填 WebDAV 地址。'; return; }
+    try {
+      var res = await fetch(base + '/greenvibe-settings.json', { headers: { 'Authorization': 'Basic ' + btoa(state.settings.webdavUser + ':' + state.settings.webdavPass) } });
+      if (!res.ok) throw new Error('WebDAV 返回 ' + res.status);
+      var data = await res.json();
+      state.servers = data.servers || []; state.settings = Object.assign(state.settings, data.settings || {});
+      saveJson(LS_SERVERS, state.servers); saveJson(LS_SETTINGS, state.settings); refreshServerUI();
+      $('settingsStatus').textContent = '还原成功。';
+    } catch (e) { $('settingsStatus').textContent = '还原失败：' + e.message; }
+  };
+
+  // 初始化
+  refreshServerUI();
+  loadHome();
+})();
