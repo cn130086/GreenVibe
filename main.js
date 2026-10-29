@@ -13,7 +13,7 @@ let win = null;
 function createWindow() {
   win = new BrowserWindow({
     title: 'GreenVibe',
-    icon: path.join(__dirname, 'assets', 'icon.png'),
+    icon: fs.existsSync(path.join(__dirname, 'icon.png')) ? path.join(__dirname, 'icon.png') : path.join(__dirname, 'assets', 'icon.png'),
     width: 1280,
     height: 800,
     webPreferences: {
