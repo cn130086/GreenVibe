@@ -1,7 +1,7 @@
 // main.js —— Electron 主进程（原创代码）
 // 职责：建窗口、给渲染进程提供安全桥接：启动 mpv / 外部播放器、下载缓存文件。
 // 注意：这里不做任何账号校验绕过、不复制任何第三方客户端的代码或资源。
-const { app, BrowserWindow, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, Menu, dialog } = require('electron');
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
@@ -10,7 +10,36 @@ const http = require('http');
 
 let win = null;
 
+// 全中文应用菜单：原默认菜单是英文（文件/视图/窗口/帮助均为英文），现全部汉化。
+function buildChineseMenu() {
+  const template = [
+    { label: '文件', submenu: [
+      { label: '退出', role: 'quit' }
+    ]},
+    { label: '视图', submenu: [
+      { label: '重新加载', role: 'reload' },
+      { label: '强制重新加载', role: 'forceReload' },
+      { label: '开发者工具', role: 'toggleDevTools' },
+      { type: 'separator' },
+      { label: '实际大小', role: 'resetZoom' },
+      { label: '放大', role: 'zoomIn' },
+      { label: '缩小', role: 'zoomOut' },
+      { type: 'separator' },
+      { label: '全屏', role: 'togglefullscreen' }
+    ]},
+    { label: '窗口', submenu: [
+      { label: '最小化', role: 'minimize' },
+      { label: '关闭', role: 'close' }
+    ]},
+    { label: '帮助', submenu: [
+      { label: '关于 GreenVibe', click: () => { dialog.showMessageBox({ type: 'info', title: '关于 GreenVibe', message: 'GreenVibe', detail: '原创免费的 Emby / Jellyfin 播放器，走公开接口，内置 mpv 播放器。只连接你自己的服务器。' }); } }
+    ]}
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
 function createWindow() {
+  buildChineseMenu();
   win = new BrowserWindow({
     title: 'GreenVibe',
     icon: fs.existsSync(path.join(__dirname, 'icon.png')) ? path.join(__dirname, 'icon.png') : path.join(__dirname, 'assets', 'icon.png'),

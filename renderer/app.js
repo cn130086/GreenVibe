@@ -15,6 +15,7 @@
     settings: Object.assign({ mpvPath: '', anime4kPath: '', hdr: false, extPlayerPath: '', danmakuUrl: '', skipIntroSec: 85, subSize: 22, subBottom: 60, subColor: '#ffffff', traktClientId: '', traktToken: '', webdavUrl: '', webdavUser: '', webdavPass: '' }, loadJson(LS_SETTINGS, {})),
     skipPoints: loadJson(LS_SKIP, {}),
     demo: false,
+    newLines: [],
     currentServerIndex: 0,
     currentItem: null,
     currentSources: [],
@@ -55,14 +56,78 @@
 
   async function api(server, path, opts) {
     opts = opts || {};
-    var res = await fetch(server.baseUrl + path, {
-      method: opts.method || 'GET',
-      headers: Object.assign({ 'X-Emby-Authorization': authHeader(server), 'Content-Type': 'application/json' }, opts.headers || {}),
-      body: opts.body ? JSON.stringify(opts.body) : undefined
-    });
-    if (!res.ok) throw new Error('服务器返回 ' + res.status + '：' + path);
+    var res;
+    try {
+      res = await fetch(server.baseUrl + path, {
+        method: opts.method || 'GET',
+        headers: Object.assign({ 'X-Emby-Authorization': authHeader(server), 'Content-Type': 'application/json' }, opts.headers || {}),
+        body: opts.body ? JSON.stringify(opts.body) : undefined
+      });
+    } catch (e) {
+      throw new Error('网络连接失败（服务器连不上）：请检查主机、端口、加密开关和网络，再点“测试连接”');
+    }
     var text = await res.text();
+    if (!res.ok) {
+      var plain = String(text || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160);
+      if (res.status === 401) throw new Error('用户名或密码不对（服务器返回 401）' + (plain ? '：' + plain : ''));
+      if (res.status === 404) throw new Error('服务器地址不对，找不到这个接口（服务器返回 404）：请检查主机、路径和端口');
+      throw new Error('服务器返回 ' + res.status + (plain ? '：' + plain : '') + '（接口：' + path + '）');
+    }
     try { return JSON.parse(text); } catch (e) { return text; }
+  }
+
+  // ---- 服务器地址拼装（SenPlayer 式：主机 / 路径 / 端口 / 加密开关）----
+  function composeServerUrl(host, pathPart, port, httpsOn) {
+    var h = String(host || '').trim().replace(/^https?:\/\//, '').replace(/\/$/, '');
+    if (!h) return '';
+    // 如果用户在主机里顺手粘了路径，把路径拆出来
+    var slash = h.indexOf('/');
+    var extraPath = '';
+    if (slash >= 0) { extraPath = h.slice(slash); h = h.slice(0, slash); }
+    var pp = String(pathPart || '').trim().replace(/^\/+/, '').replace(/\/+$/, '');
+    if (!pp && extraPath) pp = extraPath.replace(/^\/+/, '').replace(/\/+$/, '');
+    var proto = httpsOn ? 'https' : 'http';
+    var portPart = String(port || '').trim();
+    return proto + '://' + h + (portPart ? ':' + portPart : '') + (pp ? '/' + pp : '');
+  }
+  function parseFullUrl(url) {
+    var u = String(url || '').trim();
+    if (!u) return { host: '', path: '', port: '', https: false };
+    if (!/^https?:\/\//.test(u)) u = 'http://' + u;
+    try {
+      // URL 解析会把默认端口（http 的 80、https 的 443）归一化为空，这里先用正则把用户明确写的端口抢回来，保证粘贴 http://line.xmsl.org:80 后仍显示 80。
+      var portMatch = u.match(/:\/\/[^/:]+:(\d+)(\/|$)/);
+      var parsed = new URL(u);
+      return { host: parsed.hostname, path: parsed.pathname.replace(/^\/+/, '').replace(/\/+$/, ''), port: (portMatch && portMatch[1]) || parsed.port || '', https: parsed.protocol === 'https:' };
+    } catch (e) { return { host: u, path: '', port: '', https: false }; }
+  }
+  function typeLabel(t) {
+    if (t === 'Movie') return '电影';
+    if (t === 'Series') return '剧集';
+    if (t === 'Episode') return '剧集单集';
+    return t || '';
+  }
+  function setLoginStatus(text, kind) {
+    var el = $('loginStatus'); if (!el) return;
+    el.textContent = text || '';
+    el.className = 'status' + (kind ? ' ' + kind : '');
+  }
+  function renderBackupLines() {
+    var list = $('srvLinesList'); if (!list) return;
+    list.innerHTML = '';
+    state.newLines.forEach(function (l, i) {
+      var d = document.createElement('div'); d.className = 'line-item';
+      var span = document.createElement('span'); span.textContent = l;
+      var del = document.createElement('button'); del.type = 'button'; del.className = 'btn-soft'; del.textContent = '删除';
+      del.onclick = function () { state.newLines.splice(i, 1); renderBackupLines(); };
+      d.appendChild(span); d.appendChild(del); list.appendChild(d);
+    });
+    var c = $('srvLinesCount'); if (c) c.textContent = state.newLines.length + ' 条';
+  }
+  function syncUrlPreview() {
+    var url = composeServerUrl($('srvHost').value, $('srvPath').value, $('srvPort').value, $('srvHttps').checked);
+    if ($('srvUrlPreview')) $('srvUrlPreview').value = url;
+    return url;
   }
 
   function imageUrl(server, item, type) {
@@ -78,7 +143,7 @@
       var poster = it.demoVideo ? '<div class="poster">' + esc(it.Name) + '</div>' :
         '<div class="poster"><img src="' + esc(imageUrl(server, it)) + '" alt="" onerror="this.parentNode.textContent=\'' + esc(it.Name) + '\'"></div>';
       var pos = it.UserData && it.UserData.PlaybackPositionTicks ? ' · 已看 ' + Math.round(ticksToSec(it.UserData.PlaybackPositionTicks) / 60) + ' 分钟' : '';
-      div.innerHTML = poster + '<div class="meta"><b>' + esc(it.Name) + '</b><br><small>' + esc(it.Type || '') + (it.ProductionYear ? ' · ' + it.ProductionYear : '') + pos + '</small></div>';
+      div.innerHTML = poster + '<div class="meta"><b>' + esc(it.Name) + '</b><br><small>' + esc(typeLabel(it.Type)) + (it.ProductionYear ? ' · ' + it.ProductionYear : '') + pos + '</small></div>';
       div.onclick = function () { openDetail(it, server); };
       el.appendChild(div);
     });
@@ -99,12 +164,15 @@
     lines.forEach(function (l, i) { var o = document.createElement('option'); o.value = i; o.textContent = l; lineSel.appendChild(o); });
     if (srv) lineSel.value = (typeof srv.activeLine === 'number' ? srv.activeLine : '');
     var list = $('serverList'); list.innerHTML = '';
+    if (!state.servers.length) list.innerHTML = '<p class="hint">还没有添加服务器，请在上面填好后点“添加并登录”。</p>';
     state.servers.forEach(function (s, i) {
-      var d = document.createElement('div');
-      d.innerHTML = '<b>' + esc(s.name) + '</b> ' + esc(s.url) + (s.private ? '（私密）' : '') + ' ';
-      var del = document.createElement('button'); del.textContent = '删除'; del.onclick = function () { state.servers.splice(i, 1); saveJson(LS_SERVERS, state.servers); refreshServerUI(); };
-      d.appendChild(del); list.appendChild(d);
+      var d = document.createElement('div'); d.className = 'server-item';
+      var info = document.createElement('div');
+      info.innerHTML = '<b>' + esc(s.name) + '</b>' + (s.remark ? ' · ' + esc(s.remark) : '') + '<br><small>' + esc(s.url) + (s.private ? '（私密）' : '') + (s.lines && s.lines.length ? ' · 备用线路 ' + s.lines.length + ' 条' : '') + '</small>';
+      var del = document.createElement('button'); del.type = 'button'; del.className = 'btn-soft'; del.textContent = '删除'; del.onclick = function () { state.servers.splice(i, 1); saveJson(LS_SERVERS, state.servers); refreshServerUI(); };
+      d.appendChild(info); d.appendChild(del); list.appendChild(d);
     });
+    renderBackupLines();
     // 设置页回填
     $('mpvPath').value = state.settings.mpvPath || '';
     $('anime4kPath').value = state.settings.anime4kPath || '';
@@ -216,7 +284,7 @@
     var body = $('detailBody');
     var poster = item.demoVideo ? '' : '<img src="' + esc(imageUrl(srv, item)) + '" style="max-width:240px" onerror="this.remove()">';
     body.innerHTML = poster + '<h2>' + esc(item.Name) + '</h2><p>' + esc(item.Overview || '暂无简介') + '</p>' +
-      '<p>类型：' + esc(item.Type || '') + (item.ProductionYear ? ' · ' + item.ProductionYear : '') + '</p>' +
+      '<p>类型：' + esc(typeLabel(item.Type)) + (item.ProductionYear ? ' · ' + item.ProductionYear : '') + '</p>' +
       '<button id="detailPlay">▶ 播放</button> <button id="detailResume">从上次位置继续</button>';
     $('detailModal').classList.remove('hidden');
     $('detailPlay').onclick = function () { $('detailModal').classList.add('hidden'); startPlayback(item, srv, 0); };
@@ -364,13 +432,58 @@
   $('detailClose').onclick = function () { $('detailModal').classList.add('hidden'); };
   $('playerClose').onclick = closePlayer;
 
-  $('addServerBtn').onclick = async function () {
-    var srv = { name: $('srvName').value.trim() || 'Emby 服务器', url: $('srvUrl').value.trim(), username: $('srvUser').value.trim(), password: $('srvPass').value, apiKey: $('srvApiKey').value.trim(), private: $('srvPrivate').checked, lines: $('srvLines').value.split(',').map(function (x) { return x.trim(); }).filter(Boolean), activeLine: 0 };
-    if (!srv.url) { alert('请先填服务器地址'); return; }
-    try { await loginServer(srv); state.servers.push(srv); saveJson(LS_SERVERS, state.servers); state.currentServerIndex = state.servers.length - 1; refreshServerUI(); $('settingsStatus').textContent = '登录成功，已添加服务器。'; loadHome(); }
-    catch (e) { $('settingsStatus').textContent = '登录失败：' + e.message + '（地址、用户名、密码对吗？）'; }
+  function readServerForm() {
+    var url = syncUrlPreview();
+    if (!url && $('srvUrl').value.trim()) {
+      var parsed = parseFullUrl($('srvUrl').value.trim());
+      $('srvHost').value = parsed.host; $('srvPath').value = parsed.path; $('srvPort').value = parsed.port; $('srvHttps').checked = parsed.https;
+      url = syncUrlPreview();
+    }
+    return { name: $('srvName').value.trim() || '影视服务器', remark: $('srvRemark').value.trim(), url: url, username: $('srvUser').value.trim(), password: $('srvPass').value, apiKey: $('srvApiKey').value.trim(), private: $('srvPrivate').checked, lines: state.newLines.slice(), activeLine: 0 };
+  }
+  function bindServerFormSync() {
+    ['srvHost', 'srvPath', 'srvPort'].forEach(function (id) { $(id).addEventListener('input', syncUrlPreview); });
+    $('srvHttps').addEventListener('change', syncUrlPreview);
+    $('srvUrl').addEventListener('input', function () {
+      var parsed = parseFullUrl(this.value.trim());
+      if (parsed.host) { $('srvHost').value = parsed.host; $('srvPath').value = parsed.path; $('srvPort').value = parsed.port; $('srvHttps').checked = parsed.https; syncUrlPreview(); }
+    });
+    $('srvLineAddBtn').onclick = function () {
+      var v = $('srvLineInput').value.trim(); if (!v) return;
+      if (!/^https?:\/\//.test(v)) v = 'http://' + v;
+      state.newLines.push(v); $('srvLineInput').value = ''; renderBackupLines();
+    };
+    $('srvPassToggle').onclick = function () { var el = $('srvPass'); el.type = el.type === 'password' ? 'text' : 'password'; };
+    $('traktTokenToggle').onclick = function () { var el = $('traktToken'); el.type = el.type === 'password' ? 'text' : 'password'; };
+    $('webdavPassToggle').onclick = function () { var el = $('webdavPass'); el.type = el.type === 'password' ? 'text' : 'password'; };
+  }
+  bindServerFormSync();
+  $('testConnectionBtn').onclick = async function () {
+    var srv = readServerForm();
+    if (!srv.url) { setLoginStatus('请先填主机和端口，例如主机 line.xmsl.org、端口 80。', 'error'); return; }
+    setLoginStatus('正在测试连接…', 'loading');
+    try {
+      var server = Object.assign({}, srv, { baseUrl: srv.url });
+      var info = await api(server, '/System/Info/Public');
+      setLoginStatus('连接成功：服务器名称 ' + (info.ServerName || '未知') + '，版本 ' + (info.Version || '未知') + '。接下来可以点“添加并登录”。', 'success');
+    } catch (e) { setLoginStatus('服务器连不上：' + e.message + '。请先检查主机、端口和加密开关是否和你平时用的完全一致。', 'error'); }
   };
-  $('saveServersBtn').onclick = function () { saveSettingsFromForm(); $('settingsStatus').textContent = '设置已保存到本机。'; };
+  $('addServerBtn').onclick = async function () {
+    var btn = $('addServerBtn');
+    var srv = readServerForm();
+    if (!srv.url) { setLoginStatus('请先填主机和端口，例如主机 line.xmsl.org、端口 80。', 'error'); return; }
+    if (!srv.apiKey && !srv.username) { setLoginStatus('请先填用户名，或者填密钥（可选）。', 'error'); return; }
+    btn.disabled = true; var oldText = btn.textContent; btn.textContent = '正在登录…';
+    setLoginStatus('正在登录…', 'loading');
+    try {
+      await loginServer(srv);
+      state.servers.push(srv); saveJson(LS_SERVERS, state.servers); state.currentServerIndex = state.servers.length - 1; state.newLines = [];
+      refreshServerUI(); setLoginStatus('登录成功，已添加服务器“' + srv.name + '”。', 'success'); loadHome();
+    } catch (e) { setLoginStatus('登录失败：' + e.message + '。请检查用户名和密码是否和你平时用的完全一致（区分大小写），也可以先点“测试连接”确认服务器本身通不通。', 'error'); }
+    btn.disabled = false; btn.textContent = oldText;
+  };
+  $('saveServersBtn').onclick = function () { saveSettingsFromForm(); setLoginStatus('设置已保存到本机（还没有登录，点“添加并登录”才会验证账号）。', 'success'); };
+  $('topSaveBtn').onclick = function () { saveSettingsFromForm(); setLoginStatus('已保存。', 'success'); };
 
   // 播放器控制
   $('resumeBtn').onclick = function () { var item = state.currentItem; if (item && item.UserData) $('videoEl').currentTime = ticksToSec(item.UserData.PlaybackPositionTicks); };
@@ -453,10 +566,10 @@
   // Trakt / WebDAV：只用用户自己的凭据
   $('traktSyncBtn').onclick = async function () {
     saveSettingsFromForm();
-    if (!state.settings.traktClientId || !state.settings.traktToken) { $('settingsStatus').textContent = '请先填你自己的 Trakt Client ID 和 Access Token。'; return; }
+    if (!state.settings.traktClientId || !state.settings.traktToken) { $('settingsStatus').textContent = '请先填你自己的 Trakt 客户端编号和访问令牌。'; return; }
     try {
       var res = await fetch('https://api.trakt.tv/sync/history', { method: 'GET', headers: { 'trakt-api-key': state.settings.traktClientId, 'trakt-api-version': '2', 'Authorization': 'Bearer ' + state.settings.traktToken } });
-      $('settingsStatus').textContent = res.ok ? 'Trakt 连接成功（已看同步接口已通，完整同步按 Trakt 返回的历史条目处理）。' : 'Trakt 返回 ' + res.status + '，请检查 Client ID / Token。';
+      $('settingsStatus').textContent = res.ok ? 'Trakt 连接成功（已看同步接口已通，完整同步按 Trakt 返回的历史条目处理）。' : 'Trakt 返回 ' + res.status + '，请检查客户端编号和访问令牌。';
     } catch (e) { $('settingsStatus').textContent = 'Trakt 连接失败：' + e.message; }
   };
   $('webdavBackupBtn').onclick = async function () {
