@@ -26,6 +26,9 @@
     playbackMode: 'direct',
     hlsTried: false,
     playStallTimer: null,
+    netSpeedTimer: null,
+    lastBufferedEnd: 0,
+    usingMpv: false,
     primaryCues: [], secondaryCues: [], danmakuItems: [],
     progressTimer: null,
     sessionId: 'greenvibe-' + Math.random().toString(36).slice(2, 10)
@@ -676,6 +679,47 @@
     el.className = 'status' + (kind ? ' ' + kind : '');
   }
   function clearPlayWatchdog() { if (state.playStallTimer) { clearTimeout(state.playStallTimer); state.playStallTimer = null; } }
+  // ---------- 播放网速显示（浏览器内置播放时） ----------
+  // 原理（诚实说明）：浏览器 <video> 不直接给下载速度，所以这里用
+  // “每秒缓冲末尾增长的秒数 × 片源平均码率”来估算。码率来自 Emby
+  // MediaSources 的 Bitrate（比特/秒）；没有码率时不编造 MB/s，
+  // 只显示“缓冲增长 X.X 秒/秒（估算）”。mpv/外部播放器是独立进程，
+  // GreenVibe 拿不到它的网速，那时只写一句提示，不编数字。
+  function setNetSpeed(text) { var el = $('netSpeed'); if (el) el.textContent = text || ''; }
+  function fmtSpeed(bytesPerSec) {
+    if (bytesPerSec >= 1048576) return (bytesPerSec / 1048576).toFixed(1) + ' MB/s';
+    if (bytesPerSec >= 1024) return Math.round(bytesPerSec / 1024) + ' KB/s';
+    return Math.round(bytesPerSec) + ' B/s';
+  }
+  function currentBitrate() {
+    var src = currentSource();
+    if (src && Number(src.Bitrate) > 0) return Number(src.Bitrate); // 比特/秒
+    return 0;
+  }
+  function stopNetSpeedTimer() { if (state.netSpeedTimer) { clearInterval(state.netSpeedTimer); state.netSpeedTimer = null; } }
+  function startNetSpeedTimer() {
+    stopNetSpeedTimer();
+    if (state.usingMpv) { setNetSpeed('已交给 mpv/外部播放器播放，网速请看播放器窗口。'); return; }
+    var video = $('videoEl'); if (!video) return;
+    state.lastBufferedEnd = video.buffered && video.buffered.length ? video.buffered.end(video.buffered.length - 1) : (video.currentTime || 0);
+    state.netSpeedTimer = setInterval(function () {
+      var v = $('videoEl'); if (!v || !state.currentItem || state.usingMpv) { stopNetSpeedTimer(); return; }
+      var end = v.buffered && v.buffered.length ? v.buffered.end(v.buffered.length - 1) : (v.currentTime || 0);
+      var bufferedAhead = Math.max(0, end - (v.currentTime || 0));
+      var growth = end - state.lastBufferedEnd;
+      state.lastBufferedEnd = end;
+      if (v.paused) { setNetSpeed('已暂停 · 已缓冲 ' + Math.round(bufferedAhead) + ' 秒'); return; }
+      var bufferedText = '已缓冲 ' + Math.round(bufferedAhead) + ' 秒';
+      if (growth <= 0.05 && bufferedAhead < 5 && v.readyState < 3) { setNetSpeed('缓冲中… · ' + bufferedText); return; }
+      var bitrate = currentBitrate();
+      if (bitrate > 0) {
+        var bytes = Math.max(0, growth) * bitrate / 8;
+        setNetSpeed('网速：' + fmtSpeed(bytes) + ' · ' + bufferedText);
+      } else {
+        setNetSpeed('网速（估算）：缓冲增长 ' + Math.max(0, growth).toFixed(1) + ' 秒/秒 · ' + bufferedText);
+      }
+    }, 1000);
+  }
   function describeVideoError(video) {
     var e = video.error;
     if (!e) return '浏览器没有给出具体错误代码';
@@ -694,6 +738,7 @@
     video.src = hlsUrl(item, srv, currentSource());
     video.play().catch(function (e) { setPlayerStatus('转码流也被浏览器拒绝：' + (e && e.message ? e.message : '未知原因') + '，请点上面绿色的“用内置 mpv 播放”。', 'error'); });
     startPlayWatchdog();
+    startNetSpeedTimer();
     return true;
   }
   function startPlayWatchdog() {
@@ -707,6 +752,8 @@
     }, 15000);
   }
   function handleVideoError() {
+    stopNetSpeedTimer();
+    setNetSpeed('播放出错，网速停止统计。');
     var video = $('videoEl');
     var reason = describeVideoError(video);
     if (!tryHlsFallback(reason)) {
@@ -740,6 +787,9 @@
     state.currentSourceIndex = 0;
     state.hlsTried = false;
     state.playbackMode = 'direct';
+    state.usingMpv = false;
+    stopNetSpeedTimer();
+    setNetSpeed('');
     clearPlayWatchdog();
     var srv = server || currentServer();
     var video = $('videoEl');
@@ -766,6 +816,7 @@
       try { video.currentTime = startSeconds || 0; } catch (e) {}
       video.play().catch(function (e) { setPlayerStatus('浏览器播放被拒绝：' + (e && e.message ? e.message : '未知原因') + '，请点上面绿色的“用内置 mpv 播放”。', 'error'); });
       startPlayWatchdog();
+      startNetSpeedTimer();
       setPlayerStatus('正在用浏览器直连播放：' + (src.Name || '片源 1') + '（' + sourceCodecText(src) + '）。浏览器只擅长 H.264 + AAC，HEVC / 10-bit / DTS / MKV 很可能黑屏；播不出来会自动换转码流，仍不行请点上面绿色的“用内置 mpv 播放”。', 'loading');
       await preloadNextEpisode(item, srv);
       if (state.nextEpisode) $('playerStatus').textContent += ' · 下一集已预加载：' + state.nextEpisode.Name;
@@ -791,6 +842,9 @@
     var video = $('videoEl');
     reportProgress(true);
     clearPlayWatchdog();
+    stopNetSpeedTimer();
+    setNetSpeed('');
+    state.usingMpv = false;
     clearInterval(state.progressTimer);
     video.pause(); video.removeAttribute('src'); video.load();
     $('playerModal').classList.add('hidden');
@@ -921,16 +975,32 @@
     if (!window.electronAPI) { setPlayerStatus('网页预览模式没有 mpv 桥接，请在 Electron 里打开本应用再点这个按钮。', 'error'); return; }
     var src = currentSource();
     if (!src.Id && !item.demoVideo) { setPlayerStatus('mpv 拿不到片源（服务器没有返回 MediaSource），请先重新点这部片再试。', 'error'); return; }
-    setPlayerStatus('正在交给内置 mpv 播放：' + (src.Name || '') + '（' + sourceCodecText(src) + '）。', 'loading');
+    // 先停掉浏览器内置播放和网速统计，避免 mpv 和浏览器同时出声/抢带宽；
+    // 状态先写“正在启动”，成功/失败在 IPC 返回后才写，绝不在 mpv 退出后才报成功。
+    try { v.pause(); } catch (e) {}
+    stopNetSpeedTimer();
+    setPlayerStatus('正在启动 mpv…（' + (src.Name || '') + '，' + sourceCodecText(src) + '）', 'loading');
+    setNetSpeed('正在启动 mpv…');
     var res = await window.electronAPI.playMpv({ url: streamUrl(item, srv, src, true), startSeconds: Math.floor(v.currentTime || 0), mpvPath: state.settings.mpvPath, anime4kShader: state.settings.anime4kPath, hdrToneMapping: state.settings.hdr, title: item.Name });
-    setPlayerStatus(res.ok ? '已交给内置 mpv 播放（mpv 窗口关闭后会回到这里）' : 'mpv 启动失败：' + res.error + '（内置 mpv 没找到时，请在设置里填自己装的 mpv 路径，或用浏览器转码流先看）', res.ok ? 'success' : 'error');
+    if (res.ok) {
+      state.usingMpv = true;
+      setPlayerStatus('mpv 已启动（独立窗口播放中，关闭 mpv 窗口后回到这里）。如果没有看到 mpv 窗口，请检查它是否被本应用窗口挡住、或在任务栏里。', 'success');
+      setNetSpeed('已交给 mpv 播放，网速请看播放器窗口。');
+    } else {
+      state.usingMpv = false;
+      setPlayerStatus('mpv 启动失败：' + res.error + '（内置 mpv 没找到时，请在设置里填自己装的 mpv 路径，或用浏览器转码流先看）', 'error');
+      setNetSpeed('mpv 启动失败，网速停止统计。');
+    }
   };
   $('extBtn').onclick = async function () {
     var item = state.currentItem; var srv = currentServer(); var src = currentSource();
     var url = streamUrl(item, srv, src, true);
     if (!window.electronAPI) { try { await navigator.clipboard.writeText(url); $('playerStatus').textContent = '已把播放地址复制到剪贴板，请粘贴到 PotPlayer / VLC 里打开。'; } catch (e) { $('playerStatus').textContent = '播放地址：' + url; } return; }
+    try { $('videoEl').pause(); } catch (e) {}
+    stopNetSpeedTimer();
     var res = await window.electronAPI.launchExternal({ exePath: state.settings.extPlayerPath, url: url });
     $('playerStatus').textContent = res.ok ? '已交给外部播放器' : '外部播放器启动失败：' + res.error;
+    if (res.ok) { state.usingMpv = true; setNetSpeed('已交给外部播放器播放，网速请看播放器窗口。'); }
   };
   $('downloadBtn').onclick = async function () {
     var item = state.currentItem; var srv = currentServer(); var src = currentSource();
@@ -984,8 +1054,16 @@
   // 所以失败时就是一块黑屏、0:00、没有任何提示。现在错误会先写进播放器状态栏，
   // 直连失败自动换一次 HLS 转码流，两种都失败才提示用 mpv。
   $('videoEl').addEventListener('error', function () { if (state.currentItem) handleVideoError(); });
-  $('videoEl').addEventListener('playing', function () { clearPlayWatchdog(); });
+  $('videoEl').addEventListener('playing', function () { clearPlayWatchdog(); if (state.currentItem && !state.usingMpv) startNetSpeedTimer(); });
   $('videoEl').addEventListener('canplay', function () { clearPlayWatchdog(); });
+  $('videoEl').addEventListener('pause', function () {
+    if (state.usingMpv) return; // 交给 mpv 后由 mpv 按钮写外部播放提示，别被暂停事件覆盖。
+    if (!state.currentItem) return;
+    stopNetSpeedTimer();
+    var v = $('videoEl');
+    var ahead = (v.buffered && v.buffered.length) ? Math.max(0, v.buffered.end(v.buffered.length - 1) - (v.currentTime || 0)) : 0;
+    setNetSpeed('已暂停 · 已缓冲 ' + Math.round(ahead) + ' 秒');
+  });
 
   // Trakt / WebDAV：只用用户自己的凭据
   $('traktSyncBtn').onclick = async function () {

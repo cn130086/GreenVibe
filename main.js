@@ -66,19 +66,50 @@ app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) creat
 // 3) 开发模式内置 mpv：原型文件夹 resources/mpv/mpv.exe（Windows 版）
 // 4) 都找不到，才回退到系统 PATH 里的 mpv（命令名 mpv），找不到则由调用方报错
 function resolveMpvPath(userPath) {
-  if (userPath && userPath !== 'mpv') return userPath;
+  // 用户在设置里填了自定义路径：文件必须真实存在，否则返回 null，
+  // 由调用方报“自定义 mpv 文件没找到”，绝不静默回退到别的 mpv。
+  if (userPath && userPath !== 'mpv') {
+    try { return fs.existsSync(userPath) ? userPath : null; } catch (e) { return null; }
+  }
   const exeName = process.platform === 'win32' ? 'mpv.exe' : 'mpv';
   const candidates = [];
   try { if (app.isPackaged) candidates.push(path.join(process.resourcesPath, 'mpv', exeName)); } catch (e) {}
   candidates.push(path.join(__dirname, 'resources', 'mpv', exeName));
   for (const c of candidates) { try { if (fs.existsSync(c)) return c; } catch (e) {} }
-  return 'mpv';
+  // 关键：打包里找不到内置 mpv 时返回 null，不再静默回退到 PATH 里
+  // 一个裸的 'mpv' 命令——Windows 电脑上通常根本没有这个命令，
+  // 以前就是这样静默失败，用户连 mpv 窗口都看不到、还以为已启动。
+  return null;
 }
 
 // ---- mpv 播放：默认用内置 mpv，自定义路径可选，内置找不到才回退系统 mpv ----
 // 参数：{ url, startSeconds, subtitleFiles: [], anime4kShader, hdrToneMapping, title }
+// 关键修复（以前的 bug）：以前 promise 只在子进程 close 时才 resolve，而且
+// 不管退出码是不是 0 都返回 ok:true。于是 mpv 一启动失败（例如坏地址、
+// 找不到 mpv），渲染进程也只能在 mpv 退出后才收到一条“已交给 mpv”的假成功；
+// 而 mpv 正常播放时，用户在关闭 mpv 之前反而看不到任何已启动的提示。
+// 现在分三步报告，绝不把“mpv 没出现”报成成功：
+// 1) 先校验 mpv 文件真实存在：打包版必须是 process.resourcesPath/mpv/mpv.exe，
+//    找不到就直接报“内置 mpv 文件没找到”，不再静默回退到 PATH 的裸 mpv；
+// 2) spawn 时捕获 stderr（不再 stdio:'ignore'），并设 3 秒宽限期：
+//    宽限期内 mpv 就退出（退出码非 0，或被信号杀死），按失败报告，
+//    附上退出码/信号和 stderr 前 500 字，用户能看到 mpv 到底为什么没起来；
+// 3) 宽限期过后 mpv 还在运行，才报 ok:true（独立窗口播放中）。
+// 用户从头到尾没见过 mpv 窗口，正对应第 1 步（文件缺失）或第 2 步
+// （瞬间退出），这两步现在都会变成一句看得见的失败原因，而不是假成功。
 ipcMain.handle('play-mpv', async (_event, opts) => {
-  const mpvPath = resolveMpvPath(opts && opts.mpvPath);
+  const userPath = opts && opts.mpvPath;
+  const mpvPath = resolveMpvPath(userPath);
+  if (!mpvPath) {
+    if (userPath && userPath !== 'mpv') {
+      return { ok: false, error: '自定义 mpv 文件没找到：' + userPath + '（请在设置里填正确的 mpv 路径，或留空用内置 mpv）' };
+    }
+    const exeName = process.platform === 'win32' ? 'mpv.exe' : 'mpv';
+    let expected = '';
+    try { if (app.isPackaged) expected = path.join(process.resourcesPath, 'mpv', exeName); } catch (e) {}
+    if (!expected) expected = path.join(__dirname, 'resources', 'mpv', exeName);
+    return { ok: false, error: '内置 mpv 文件没找到（打包里没有 ' + expected + '，请重新下载最新 GreenVibe 安装包；或在设置里填自己装的 mpv 路径）' };
+  }
   const args = [];
   if (opts && opts.title) args.push('--title=' + opts.title);
   args.push('--fs'); // 全屏，可由用户按 Esc 退出
@@ -90,9 +121,41 @@ ipcMain.handle('play-mpv', async (_event, opts) => {
   (opts && opts.subtitleFiles || []).forEach(f => args.push('--sub-file=' + f));
   args.push(opts.url);
   return new Promise((resolve) => {
-    const child = spawn(mpvPath, args, { stdio: 'ignore', detached: false });
-    child.on('error', (err) => resolve({ ok: false, error: String(err && err.message || err) }));
-    child.on('close', (code) => resolve({ ok: true, code }));
+    let settled = false;
+    let stderrText = '';
+    const done = (result) => { if (!settled) { settled = true; if (graceTimer) clearTimeout(graceTimer); resolve(result); } };
+    let graceTimer = null;
+    let child;
+    try {
+      // stderr 用 pipe 捕获（只看前几秒的诊断信息），stdout 仍忽略。
+      child = spawn(mpvPath, args, { stdio: ['ignore', 'ignore', 'pipe'], detached: false });
+    } catch (err) {
+      done({ ok: false, error: String(err && err.message || err), mpvPath });
+      return;
+    }
+    if (child.stderr) {
+      child.stderr.on('data', (d) => {
+        stderrText += String(d);
+        if (stderrText.length > 2000) stderrText = stderrText.slice(0, 2000);
+      });
+    }
+    child.on('error', (err) => done({ ok: false, error: String(err && err.message || err), mpvPath }));
+    child.on('spawn', () => {
+      // 3 秒宽限期：mpv 还在运行才算真正启动成功。
+      graceTimer = setTimeout(() => done({ ok: true, started: true, mpvPath }), 3000);
+    });
+    child.on('close', (code, signal) => {
+      if (settled) return; // 宽限期已过、已报成功，关闭只是用户关了窗口。
+      // 宽限期内就退出 = 根本没播起来（用户“从没见过 mpv 窗口”就是这种情况）。
+      const detail = String(stderrText || '').replace(/\s+/g, ' ').trim().slice(0, 500);
+      done({
+        ok: false,
+        error: 'mpv 在启动后 ' + (code !== null ? '退出码 ' + code : '被信号 ' + signal + ' 终止') + '，没有真正开始播放' + (detail ? '（mpv 报错：' + detail + '）' : '（mpv 没有输出报错，请检查播放地址和片源）'),
+        mpvPath,
+        exitCode: code,
+        signal: signal || null
+      });
+    });
   });
 });
 
