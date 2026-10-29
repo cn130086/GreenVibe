@@ -151,6 +151,20 @@
     img.src = img.dataset.base + '/Items/' + img.dataset.itemId + '/Images/' + steps[step + 1] + '?maxWidth=400&api_key=' + encodeURIComponent(img.dataset.token || '');
   };
 
+  // 宽卡（16:9）用的兜底链与竖海报不同：先试横向缩略图 Thumb，再试背景图 Backdrop，最后才试主海报 Primary。
+  window.gvWideFallback = function (img) {
+    var steps = ['Thumb', 'Backdrop', 'Primary'];
+    var step = parseInt(img.dataset.step || '0', 10);
+    if (step >= steps.length - 1) {
+      var parent = img.parentNode;
+      img.remove();
+      if (parent) parent.textContent = img.dataset.name || '';
+      return;
+    }
+    img.dataset.step = String(step + 1);
+    img.src = img.dataset.base + '/Items/' + img.dataset.itemId + '/Images/' + steps[step + 1] + '?maxWidth=640&api_key=' + encodeURIComponent(img.dataset.token || '');
+  };
+
   // Emby 有的接口返回 {Items:[...]}，有的（如 Latest）直接返回数组，统一归一化。
   function itemsFrom(data) {
     if (Array.isArray(data)) return data;
@@ -188,10 +202,17 @@
       } else {
         posterDiv.textContent = it.Name;
       }
+      if (it.CommunityRating) {
+        var badge = document.createElement('span');
+        badge.className = 'rating-badge';
+        badge.textContent = Number(it.CommunityRating).toFixed(1);
+        posterDiv.appendChild(badge);
+      }
       var pos = it.UserData && it.UserData.PlaybackPositionTicks ? ' · 已看 ' + Math.round(ticksToSec(it.UserData.PlaybackPositionTicks) / 60) + ' 分钟' : '';
       var meta = document.createElement('div');
       meta.className = 'meta';
-      meta.innerHTML = '<b>' + esc(it.Name) + '</b><br><small>' + esc(typeLabel(it.Type)) + (it.ProductionYear ? ' · ' + it.ProductionYear : '') + pos + '</small>';
+      // 海报卡：标题在上、年份在下（无年份时退回类型），评分以右下角徽标显示在海报上。
+      meta.innerHTML = '<b>' + esc(it.Name) + '</b><br><small>' + (it.ProductionYear ? esc(it.ProductionYear) : esc(typeLabel(it.Type))) + pos + '</small>';
       div.appendChild(posterDiv);
       div.appendChild(meta);
       div.onclick = function () { openDetail(it, itemServer); };
@@ -229,6 +250,109 @@
   function viewNameById(views, id) {
     var v = (views || []).filter(function (x) { return x.Id === id; })[0];
     return v ? v.Name : '';
+  }
+  function goToLibraryCategory(viewId) {
+    var sel = $('libCategory'); if (sel) sel.value = viewId || '';
+    switchTab('library');
+  }
+  function fmtClock(sec) {
+    sec = Math.max(0, Math.round(sec || 0));
+    var h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+    var mm = (h ? String(m).padStart(2, '0') : String(m)) + ':' + String(s).padStart(2, '0');
+    return h ? h + ':' + mm : mm;
+  }
+  function makeWideImg(itemServer, item, startType) {
+    var img = document.createElement('img');
+    img.src = imageUrl(itemServer, item, startType);
+    img.alt = '';
+    img.dataset.base = itemServer.baseUrl;
+    img.dataset.itemId = item.Id;
+    img.dataset.token = itemServer.token || itemServer.apiKey || '';
+    img.dataset.name = item.Name || '';
+    img.dataset.step = '0';
+    return img;
+  }
+  // 首页顶部：继续观看宽卡（16:9 横卡，海报/背景图 + 集数信息 + 进度条 + 已看/总时长）。
+  function renderResumeWide(el, items, server) {
+    if (!el) return;
+    el.innerHTML = '';
+    (items || []).forEach(function (it) {
+      var itemServer = it._server || server;
+      var card = document.createElement('div');
+      card.className = 'wide-card';
+      if (it.demoVideo) {
+        card.textContent = it.Name;
+      } else if (itemServer) {
+        var img = makeWideImg(itemServer, it, 'Thumb');
+        img.onerror = function () { window.gvWideFallback(img); };
+        card.appendChild(img);
+      } else {
+        card.textContent = it.Name;
+      }
+      var title = it.SeriesName || it.Name;
+      var ep = '';
+      if (it.Type === 'Episode' && it.ParentIndexNumber != null && it.IndexNumber != null) {
+        ep = 'S' + String(it.ParentIndexNumber).padStart(2, '0') + ' · E' + String(it.IndexNumber).padStart(2, '0') + ' · ' + it.Name;
+      } else if (it.SeriesName) {
+        ep = it.Name;
+      }
+      var posTicks = it.UserData && it.UserData.PlaybackPositionTicks;
+      var runTicks = it.RunTimeTicks;
+      var pct = (posTicks && runTicks) ? Math.min(100, Math.round(posTicks / runTicks * 100)) : 0;
+      var timeText = (posTicks && runTicks) ? fmtClock(ticksToSec(posTicks)) + ' / ' + fmtClock(ticksToSec(runTicks)) : (posTicks ? '已看 ' + Math.round(ticksToSec(posTicks) / 60) + ' 分钟' : '');
+      var overlay = document.createElement('div');
+      overlay.className = 'wide-overlay';
+      overlay.innerHTML = '<b>' + esc(title) + '</b>' + (ep ? '<br><small>' + esc(ep) + '</small>' : '') + (timeText ? '<br><small>▶ ' + esc(timeText) + '</small>' : '');
+      card.appendChild(overlay);
+      if (posTicks && runTicks) {
+        var bar = document.createElement('div');
+        bar.className = 'wide-progress';
+        var fill = document.createElement('i');
+        fill.style.width = pct + '%';
+        bar.appendChild(fill);
+        card.appendChild(bar);
+      }
+      card.onclick = function () { openDetail(it, itemServer); };
+      el.appendChild(card);
+    });
+    if (!items || !items.length) el.innerHTML = '<p class="hint">' + (server && server.token ? '还没有继续观看的内容。' : '还没有添加服务器，请先添加并登录。') + '</p>';
+  }
+  // 首页“我的媒体”：每库一张 16:9 宽卡。先试库自己的主图，没有时用该库前 4 部片的海报拼一张拼贴卡。
+  function renderMyMedia(el, views, srv, counts, collages) {
+    if (!el) return;
+    el.innerHTML = '';
+    (views || []).forEach(function (view) {
+      var card = document.createElement('div');
+      card.className = 'wide-card';
+      var visual = document.createElement('div');
+      visual.style.position = 'absolute';
+      visual.style.inset = '0';
+      card.appendChild(visual);
+      var buildCollage = function () {
+        visual.innerHTML = '';
+        var collage = document.createElement('div');
+        collage.className = 'lib-collage';
+        (collages[view.Id] || []).slice(0, 4).forEach(function (item) {
+          var img = makeWideImg(srv, item, 'Primary');
+          img.onerror = function () { window.gvPosterFallback(img); };
+          collage.appendChild(img);
+        });
+        if (!collage.children.length) collage.textContent = view.Name;
+        visual.appendChild(collage);
+      };
+      var own = document.createElement('img');
+      own.src = srv.baseUrl + '/Items/' + view.Id + '/Images/Primary?maxWidth=640&api_key=' + encodeURIComponent(srv.token || srv.apiKey || '');
+      own.alt = '';
+      own.onerror = buildCollage;
+      visual.appendChild(own);
+      var overlay = document.createElement('div');
+      overlay.className = 'wide-overlay';
+      overlay.innerHTML = '<b>' + esc(view.Name) + '</b>';
+      card.appendChild(overlay);
+      card.onclick = function () { goToLibraryCategory(view.Id); };
+      el.appendChild(card);
+    });
+    if (!views || !views.length) el.innerHTML = '<p class="hint">服务器没有返回任何分类（媒体库为空，或这个账号没有访问任何媒体库的权限）。</p>';
   }
 
   // ---------- 服务器管理 ----------
@@ -311,85 +435,111 @@
   async function loadHome() {
     if (state.demo) {
       setStatus('homeStatus', '演示模式：下面是演示数据，连上真服务器后会被真数据替换。');
-      renderGrid($('resumeGrid'), DEMO_ITEMS.filter(function (x) { return x.UserData && x.UserData.PlaybackPositionTicks; }), null);
-      renderGrid($('latestGrid'), DEMO_ITEMS, null);
+      renderResumeWide($('resumeWide'), DEMO_ITEMS.filter(function (x) { return x.UserData && x.UserData.PlaybackPositionTicks; }), null);
+      if ($('myMediaGrid')) $('myMediaGrid').innerHTML = '<p class="hint">演示模式：连上真服务器后，这里会显示你的媒体库宽卡。</p>';
       if ($('homeViews')) $('homeViews').innerHTML = '';
       return;
     }
     var srv = currentServer();
     if (!srv || !srv.token) {
       setStatus('homeStatus', '还没有添加服务器，请先添加并登录。');
-      renderGrid($('resumeGrid'), [], srv);
-      renderGrid($('latestGrid'), [], srv);
+      renderResumeWide($('resumeWide'), [], srv);
+      if ($('myMediaGrid')) $('myMediaGrid').innerHTML = '';
       if ($('homeViews')) $('homeViews').innerHTML = '';
       return;
     }
-    // 聚合视界：逐个非私密服务器取继续观看 + 最新，再汇总（单个失败不再悄悄吞掉，记下来报给用户）
+    // 继续观看 + 最新（最新只供聚合视界页用；首页不再单设一个全局“最新添加”排，
+    // 避免和下面每库一排的最新内容重复）。
     var resumeAll = [], latestAll = [], homeErrors = [];
     for (var i = 0; i < state.servers.length; i++) {
       var s0 = state.servers[i]; if (s0.private) continue;
       var sv = Object.assign({}, s0, { baseUrl: String(s0.url).replace(/\/$/, '') });
       try {
-        var r = await api(sv, '/Users/' + sv.userId + '/Items/Resume?Limit=10&Fields=PrimaryImageAspectRatio,Overview');
-        var l = await api(sv, '/Users/' + sv.userId + '/Items/Latest?Limit=10&Fields=PrimaryImageAspectRatio,Overview');
+        var r = await api(sv, '/Users/' + sv.userId + '/Items/Resume?Limit=10&Fields=PrimaryImageAspectRatio,Overview,ProductionYear,CommunityRating');
+        var l = await api(sv, '/Users/' + sv.userId + '/Items/Latest?Limit=10&Fields=PrimaryImageAspectRatio,Overview,ProductionYear,CommunityRating');
         itemsFrom(r).forEach(function (x) { x._server = sv; resumeAll.push(x); });
         itemsFrom(l).forEach(function (x) { x._server = sv; latestAll.push(x); });
       } catch (e) { homeErrors.push((s0.name || '服务器') + '：' + e.message); }
     }
-    renderGrid($('resumeGrid'), resumeAll, srv, '还没有继续观看的内容。');
-    renderGrid($('latestGrid'), latestAll, srv, '还没有最新添加的内容。');
+    renderResumeWide($('resumeWide'), resumeAll, srv);
     if ($('aggResumeGrid')) renderGrid($('aggResumeGrid'), resumeAll, srv, '还没有继续观看的内容。');
     if ($('aggLatestGrid')) renderGrid($('aggLatestGrid'), latestAll, srv, '还没有最新添加的内容。');
 
-    // 按分类的海报墙：先取 Views，再逐个分类取最新 12 部；Latest 为空时回退到该分类的 Items 列表。
-    var views = [], viewItemsTotal = 0, viewErr = '';
+    // 分类 + 每库总数 + 拼贴素材：先取 Views，再逐库取前 4 部（一次查询同时拿到
+    // TotalRecordCount 总数和拼贴海报），这样“我的媒体”宽卡和每库标题里的总数都有据可依。
+    var views = [], viewErr = '', counts = {}, collages = {}, viewErrors = [];
     try {
       views = await loadViews(srv);
+      populateLibCategory(views);
     } catch (e) { viewErr = e.message; }
+    for (var vi = 0; vi < views.length; vi++) {
+      try {
+        var head = await api(srv, '/Users/' + srv.userId + '/Items?ParentId=' + encodeURIComponent(views[vi].Id) + '&Recursive=true&Limit=4&Fields=PrimaryImageAspectRatio,Overview,ProductionYear,Genres,CommunityRating&SortBy=SortName');
+        var headItems = itemsFrom(head);
+        counts[views[vi].Id] = (head && typeof head.TotalRecordCount === 'number') ? head.TotalRecordCount : headItems.length;
+        collages[views[vi].Id] = headItems.map(function (x) { x._server = srv; return x; });
+      } catch (e) {
+        counts[views[vi].Id] = 0;
+        collages[views[vi].Id] = [];
+        viewErrors.push(views[vi].Name + '：' + e.message);
+      }
+    }
+    var totalItems = 0;
+    Object.keys(counts).forEach(function (k) { totalItems += counts[k] || 0; });
+    var countBtn = $('myMediaCountBtn');
+    if (countBtn) {
+      countBtn.textContent = views.length + ' >';
+      countBtn.onclick = function () { goToLibraryCategory(''); };
+    }
+    renderMyMedia($('myMediaGrid'), views, srv, counts, collages);
+
+    // 每库一节：标题 = 库名 + 总数 + '>'（点标题箭头进该分类的媒体库），
+    // 下面是该库的竖海报横排：先取 Latest 15 部，空了回退到递归 Items 15 部。
     var homeViewsEl = $('homeViews');
     if (homeViewsEl) {
       homeViewsEl.innerHTML = '';
-      for (var vi = 0; vi < views.length; vi++) {
-        (function (view) {
-          var section = document.createElement('div');
-          var title = document.createElement('h2'); title.textContent = view.Name; section.appendChild(title);
-          var grid = document.createElement('div'); grid.className = 'grid'; section.appendChild(grid);
-          var more = document.createElement('button'); more.className = 'btn-soft'; more.textContent = '查看全部';
-          more.onclick = function () {
-            populateLibCategory(views);
-            var sel = $('libCategory'); if (sel) sel.value = view.Id;
-            switchTab('library');
-          };
-          section.appendChild(more);
-          homeViewsEl.appendChild(section);
-          (async function () {
-            var items = [];
-            try {
-              var lat = await api(srv, '/Users/' + srv.userId + '/Items/Latest?ParentId=' + encodeURIComponent(view.Id) + '&Limit=12&Fields=PrimaryImageAspectRatio,Overview,ProductionYear,Genres,CommunityRating');
-              items = itemsFrom(lat);
-              if (!items.length) {
-                var lst = await api(srv, '/Users/' + srv.userId + '/Items?ParentId=' + encodeURIComponent(view.Id) + '&Recursive=true&Limit=12&Fields=PrimaryImageAspectRatio,Overview,ProductionYear,Genres,CommunityRating&SortBy=SortName');
-                items = itemsFrom(lst);
+      views.forEach(function (view) {
+        var section = document.createElement('div');
+        var headRow = document.createElement('div');
+        headRow.className = 'section-head home-section-head';
+        var title = document.createElement('h2'); title.textContent = view.Name; headRow.appendChild(title);
+        var arrow = document.createElement('button');
+        arrow.className = 'count-arrow btn-soft'; arrow.type = 'button';
+        arrow.textContent = (counts[view.Id] || 0) + ' >';
+        arrow.onclick = function () { goToLibraryCategory(view.Id); };
+        headRow.appendChild(arrow);
+        section.appendChild(headRow);
+        var grid = document.createElement('div'); grid.className = 'poster-row'; section.appendChild(grid);
+        homeViewsEl.appendChild(section);
+        (async function () {
+          var items = [];
+          try {
+            var lat = await api(srv, '/Users/' + srv.userId + '/Items/Latest?ParentId=' + encodeURIComponent(view.Id) + '&Limit=15&Fields=PrimaryImageAspectRatio,Overview,ProductionYear,Genres,CommunityRating');
+            items = itemsFrom(lat);
+            if (!items.length) {
+              var lst = await api(srv, '/Users/' + srv.userId + '/Items?ParentId=' + encodeURIComponent(view.Id) + '&Recursive=true&Limit=15&Fields=PrimaryImageAspectRatio,Overview,ProductionYear,Genres,CommunityRating&SortBy=SortName');
+              items = itemsFrom(lst);
+              if (lst && typeof lst.TotalRecordCount === 'number' && counts[view.Id] === 0) {
+                counts[view.Id] = lst.TotalRecordCount;
+                arrow.textContent = counts[view.Id] + ' >';
               }
-            } catch (e) {
-              grid.innerHTML = '<p class="hint">这个分类加载失败：' + esc(e.message) + '</p>';
-              return;
             }
-            items.forEach(function (x) { x._server = srv; });
-            viewItemsTotal += items.length;
-            renderGrid(grid, items, srv, '这个分类下还没有内容。');
-            // 该分类的实际条数出来后，刷新一次首页汇总文案
-            setStatus('homeStatus', '已加载 ' + views.length + ' 个分类，' + viewItemsTotal + ' 部影片' + (homeErrors.length ? '；部分服务器加载失败：' + homeErrors.join('；') : ''));
-          })();
-        })(views[vi]);
-      }
+          } catch (e) {
+            grid.innerHTML = '<p class="hint">这个分类加载失败：' + esc(e.message) + '</p>';
+            return;
+          }
+          items.forEach(function (x) { x._server = srv; });
+          renderGrid(grid, items, srv, '这个分类下还没有内容。');
+        })();
+      });
     }
+    var errText = homeErrors.concat(viewErrors).join('；');
     if (viewErr) {
-      setStatus('homeStatus', '分类加载失败：' + viewErr + (homeErrors.length ? '；' + homeErrors.join('；') : ''));
+      setStatus('homeStatus', '分类加载失败：' + viewErr + (errText ? '；' + errText : ''));
     } else if (!views.length) {
-      setStatus('homeStatus', '服务器没有返回任何分类（媒体库为空，或这个账号没有访问任何媒体库的权限）。' + (homeErrors.length ? '；' + homeErrors.join('；') : ''));
+      setStatus('homeStatus', '服务器没有返回任何分类（媒体库为空，或这个账号没有访问任何媒体库的权限）。' + (errText ? '；' + errText : ''));
     } else {
-      setStatus('homeStatus', '已加载 ' + views.length + ' 个分类' + (homeErrors.length ? '；部分服务器加载失败：' + homeErrors.join('；') : ''));
+      setStatus('homeStatus', '已加载 ' + views.length + ' 个分类，' + totalItems + ' 部影片' + (errText ? '；部分分类加载失败：' + errText : ''));
     }
   }
 
