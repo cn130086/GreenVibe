@@ -7,152 +7,185 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<header class="topbar">
-  <div class="logo"><img src="../icon.png" alt="GreenVibe 奇异果图标" onerror="this.onerror=null;this.src='../assets/icon.png'"><span class="logo-name">GreenVibe</span><span class="tag">清爽播放器 · 原型版</span></div>
-  <div class="top-controls">
-    <label class="top-field">服务器<select id="serverSelect"></select></label>
-    <label class="top-field">线路<select id="lineSelect"></select></label>
-    <label class="demo-label"><input type="checkbox" id="demoToggle"> 演示模式（不用服务器也能看界面）</label>
-  </div>
-</header>
-
-<nav class="tabs">
-  <button data-tab="home" class="active">首页</button>
-  <button data-tab="library">媒体库</button>
-  <button data-tab="search">搜索</button>
-  <button data-tab="settings">设置 / 服务器</button>
-</nav>
-
-<main>
-  <section id="tab-home" class="tab active">
-    <p class="hint">首页会把各服务器的“继续观看”和“最新添加”汇总在一起（私密服务器默认不进聚合，可在设置里改）。</p>
-    <h2>继续观看（聚合）</h2>
-    <div id="resumeGrid" class="grid"></div>
-    <h2>最新添加（聚合）</h2>
-    <div id="latestGrid" class="grid"></div>
-  </section>
-
-  <section id="tab-library" class="tab">
-    <div class="row">
-      <label class="field-inline">类型
-        <select id="libType"><option value="">全部</option><option value="Movie">电影</option><option value="Series">剧集</option><option value="Episode">剧集单集</option></select>
-      </label>
-      <button id="refreshLib">刷新媒体库</button>
+<div class="app">
+  <!-- 左侧栏：Hills 式布局灵感（仅布局方向，不复制其素材、颜色或代码） -->
+  <aside class="sidebar">
+    <div class="side-logo"><img src="../icon.png" alt="GreenVibe 奇异果图标" onerror="this.onerror=null;this.src='../assets/icon.png'"><div><b>GreenVibe</b><small>清爽播放器</small></div></div>
+    <nav class="side-nav">
+      <button data-tab="home" class="active">首页</button>
+      <button data-tab="library">媒体库</button>
+      <button data-tab="favorites">收藏</button>
+      <button data-tab="aggregate">聚合视界</button>
+      <button data-tab="servers">服务器</button>
+    </nav>
+    <div class="side-bottom">
+      <button data-tab="settings">设置</button>
+      <p class="hint side-note">只连接你自己的服务器，账号只保存在本机。</p>
     </div>
-    <div id="libGrid" class="grid"></div>
-  </section>
+  </aside>
 
-  <section id="tab-search" class="tab">
-    <div class="row search-row">
-      <input id="searchInput" placeholder="搜片名（聚合搜索会逐个服务器查再汇总）">
-      <button id="searchBtn">单服务器搜索</button>
-      <button id="aggSearchBtn">聚合搜索（全部服务器）</button>
-    </div>
-    <div id="searchGrid" class="grid"></div>
-  </section>
-
-  <section id="tab-settings" class="tab settings-page">
-    <div class="settings-head">
-      <div>
-        <h2 class="page-title">添加服务器</h2>
-        <p class="hint">账号和密码只保存在你这台电脑上，只发给你自己的服务器，不会发给作者或任何第三方。不要把密码发给聊天里的任何人。</p>
+  <div class="main-col">
+    <header class="topbar">
+      <div class="search-bar">
+        <input id="topSearchInput" placeholder="搜索片名，例如：电影、剧集…">
+        <button id="topSearchBtn">搜索</button>
       </div>
-      <button id="topSaveBtn" class="btn-soft">保存</button>
-    </div>
+      <div class="top-controls">
+        <label class="top-field">服务器<select id="serverSelect"></select></label>
+        <label class="top-field">线路<select id="lineSelect"></select></label>
+        <label class="demo-label"><input type="checkbox" id="demoToggle"> 演示模式</label>
+      </div>
+    </header>
 
-    <!-- 卡片 1：名称 / 备注（SenPlayer 分组样式，灵感参考，非复制） -->
-    <div class="card-form">
-      <div class="field"><span class="field-label">名称</span><input id="srvName" placeholder="例如：家里影视库"></div>
-      <div class="field"><span class="field-label">备注</span><input id="srvRemark" placeholder="备注（可选，例如：客厅常用）"></div>
-    </div>
+    <main>
+      <section id="tab-home" class="tab active">
+        <div class="hero">
+          <div><h1>今天想看点什么？</h1><p class="hint">继续观看和最新添加都汇总在这里，点海报就能看详情。</p></div>
+          <button id="heroAddServerBtn" class="btn-primary">添加服务器</button>
+        </div>
+        <h2>继续观看</h2>
+        <div id="resumeGrid" class="grid"></div>
+        <h2>最新添加</h2>
+        <div id="latestGrid" class="grid"></div>
+      </section>
 
-    <!-- 卡片 2：服务器地址：主机 / 路径 / 端口 / 加密开关 -->
-    <div class="card-form">
-      <h3 class="card-title">服务器地址</h3>
-      <div class="field"><span class="field-label">主机</span><input id="srvHost" placeholder="例如：line.xmsl.org"></div>
-      <div class="field"><span class="field-label">路径</span><input id="srvPath" placeholder="路径（可选，例如：emby，不用填斜杠）"></div>
-      <div class="field"><span class="field-label">端口</span><input id="srvPort" inputmode="numeric" placeholder="例如：80"></div>
-      <div class="field"><span class="field-label">加密连接</span><label class="switch-row"><input type="checkbox" id="srvHttps"><span class="switch"></span><span class="switch-text">开启后用加密连接（一般家里服务器保持关闭）</span></label></div>
-      <div class="field"><span class="field-label">完整地址</span><input id="srvUrlPreview" readonly placeholder="填好主机和端口后，这里会自动拼出完整地址"></div>
+      <section id="tab-library" class="tab">
+        <h2>媒体库</h2>
+        <div class="row">
+          <label class="field-inline">类型
+            <select id="libType"><option value="">全部</option><option value="Movie">电影</option><option value="Series">剧集</option><option value="Episode">剧集单集</option></select>
+          </label>
+          <button id="refreshLib">刷新媒体库</button>
+        </div>
+        <div id="libGrid" class="grid"></div>
+      </section>
+
+      <section id="tab-favorites" class="tab">
+        <h2>我的收藏</h2>
+        <p class="hint">在影片详情里点“收藏”，就会出现在这里；再点一次就是取消收藏。</p>
+        <div id="favGrid" class="grid"></div>
+      </section>
+
+      <section id="tab-aggregate" class="tab">
+        <h2>聚合视界</h2>
+        <p class="hint">多个服务器的内容汇总到一处看，私密服务器默认不进聚合，可在设置里改。</p>
+        <h3>继续观看（聚合）</h3>
+        <div id="aggResumeGrid" class="grid"></div>
+        <h3>最新添加（聚合）</h3>
+        <div id="aggLatestGrid" class="grid"></div>
+      </section>
+
+      <section id="tab-servers" class="tab">
+        <div class="section-head">
+          <div><h2 class="page-title">服务器</h2><p class="hint">先添加服务器并登录，才能看到你的影视库。</p></div>
+          <button id="openServerModalBtn" class="btn-primary">添加服务器</button>
+        </div>
+        <div id="serverList" class="server-list"></div>
+        <div class="card-form">
+          <h3 class="card-title">怎么填？</h3>
+          <p class="hint">点“添加服务器”，在弹窗里填主机、端口、路径、用户名和密码就行；不知道怎么填时，先点弹窗里的“测试连接”，能连通会先告诉你服务器名称和版本，再登录就不容易错。</p>
+        </div>
+      </section>
+
+      <section id="tab-search" class="tab">
+        <div class="row search-row">
+          <input id="searchInput" placeholder="搜片名（聚合搜索会逐个服务器查再汇总）">
+          <button id="searchBtn">单服务器搜索</button>
+          <button id="aggSearchBtn">聚合搜索（全部服务器）</button>
+        </div>
+        <div id="searchGrid" class="grid"></div>
+      </section>
+
+      <section id="tab-settings" class="tab settings-page">
+        <div class="settings-head">
+          <div><h2 class="page-title">设置</h2><p class="hint">所有设置都用中文写，技术名词旁边都有中文解释。</p></div>
+          <button id="topSaveBtn" class="btn-soft">保存</button>
+        </div>
+
+        <h2>播放器设置</h2>
+        <div class="card-form">
+          <div class="field"><span class="field-label">播放器路径</span><input id="mpvPath" placeholder="留空 = 用内置播放器"></div>
+          <p class="hint">内置播放器就是随软件自带的 mpv 播放器，留空就能用。只有想用自己另外装的播放器时，才需要在这里填路径。</p>
+          <div class="field"><span class="field-label">画质增强文件</span><input id="anime4kPath" placeholder="你自己下载的画质增强文件位置，留空则不用"></div>
+          <p class="hint">画质增强（Anime4K）需要你自己准备增强文件，填在这里才会生效，不填也能正常看。</p>
+          <label class="check-row"><input type="checkbox" id="hdrToggle"> 开启高动态范围色调映射（让亮的地方不过曝、暗的地方看得清）</label>
+          <div class="field"><span class="field-label">外部播放器</span><input id="extPlayerPath" placeholder="你电脑上另外装的播放器程序位置"></div>
+          <p class="hint">外部播放器是指跳出本软件、用你电脑上别的播放器打开，例如 PotPlayer、VLC，不填就不启用。</p>
+          <div class="field"><span class="field-label">弹幕来源</span><input id="danmakuUrl" placeholder="你的弹幕来源地址，留空则没有弹幕"></div>
+          <p class="hint">弹幕需要你自己提供来源地址，软件不内置任何弹幕来源。</p>
+          <div class="field"><span class="field-label">跳过片头秒数</span><input id="skipIntroSec" type="number" value="85"></div>
+          <p class="hint">点“跳过片头”时一次往后跳多少秒，默认 85 秒。</p>
+        </div>
+
+        <h2>字幕样式（主字幕 + 次字幕）</h2>
+        <div class="card-form">
+          <div class="field"><span class="field-label">字幕字号</span><input id="subSize" type="number" value="22"></div>
+          <div class="field"><span class="field-label">字幕位置</span><input id="subBottom" type="number" value="60"></div>
+          <p class="hint">字幕位置是指字幕离画面底部的距离，单位是像素，数字越大离底部越远。</p>
+          <div class="field"><span class="field-label">字幕颜色</span><input id="subColor" value="#ffffff"></div>
+        </div>
+
+        <h2>观看记录同步（你自己的账号）</h2>
+        <div class="card-form">
+          <p class="hint">这里不内置任何账号。去 Trakt（一个看剧记录网站）官网申请你自己的应用后，把下面的编号和令牌填进来，点“同步已看”才会调用 Trakt。</p>
+          <div class="field"><span class="field-label">客户端编号</span><input id="traktClientId" placeholder="你在 Trakt 申请到的客户端编号"></div>
+          <div class="field"><span class="field-label">访问令牌</span><div class="password-row"><input id="traktToken" type="password" placeholder="你在 Trakt 申请到的访问令牌"><button type="button" id="traktTokenToggle" class="btn-eye" aria-label="显示或隐藏访问令牌">👁</button></div></div>
+          <button id="traktSyncBtn" class="btn-soft">同步已看记录</button>
+        </div>
+
+        <h2>备份与还原设置（你自己的网盘）</h2>
+        <div class="card-form">
+          <p class="hint">备份文件只写到你自己的网盘，文件名是 greenvibe-settings.json。网盘是指支持 WebDAV（一种网盘同步协议）的服务。</p>
+          <div class="field"><span class="field-label">网盘地址</span><input id="webdavUrl" placeholder="例如：https://你的网盘地址/"></div>
+          <div class="field"><span class="field-label">网盘用户名</span><input id="webdavUser" placeholder="你的网盘用户名"></div>
+          <div class="field"><span class="field-label">网盘密码</span><div class="password-row"><input id="webdavPass" type="password" placeholder="你的网盘密码"><button type="button" id="webdavPassToggle" class="btn-eye" aria-label="显示或隐藏网盘密码">👁</button></div></div>
+          <div class="action-row">
+            <button id="webdavBackupBtn" class="btn-soft">备份设置到网盘</button>
+            <button id="webdavRestoreBtn" class="btn-soft">从网盘还原设置</button>
+          </div>
+        </div>
+        <p id="settingsStatus" class="hint"></p>
+      </section>
+    </main>
+  </div>
+</div>
+
+<!-- 添加服务器弹窗：Hills 式居中弹窗灵感（仅布局方向，不复制其素材、颜色或代码） -->
+<div id="serverModal" class="modal hidden">
+  <div class="modal-box server-modal">
+    <button class="close" id="serverModalClose">×</button>
+    <div class="modal-head">
+      <img src="../icon.png" alt="GreenVibe 奇异果图标" onerror="this.onerror=null;this.src='../assets/icon.png'">
+      <div><h2>添加服务器</h2><p class="hint">填好下面几项，点“登录”就能连上你的影视库。</p></div>
+    </div>
+    <div class="modal-fields">
+      <div class="field"><span class="field-label">显示名称</span><input id="srvModalName" placeholder="选填，留空会自动获取服务器名称"></div>
+      <div class="field"><span class="field-label">服务器地址</span><input id="srvModalHost" placeholder="例如：line.xmsl.org"></div>
+      <div class="field"><span class="field-label">端口</span><input id="srvModalPort" inputmode="numeric" placeholder="选填，例如：80"></div>
+      <div class="field"><span class="field-label">路径</span><input id="srvModalPath" placeholder="选填，例如：emby，不用填斜杠"></div>
+      <div class="field"><span class="field-label">用户名</span><input id="srvModalUser" placeholder="必填，你的影视账号用户名"></div>
+      <div class="field"><span class="field-label">密码</span><div class="password-row"><input id="srvModalPass" type="password" placeholder="选填，你的影视账号密码"><button type="button" id="srvModalPassToggle" class="btn-eye" aria-label="显示或隐藏密码">👁</button></div></div>
+      <div class="field"><span class="field-label">完整地址</span><input id="srvModalUrlPreview" readonly placeholder="填好地址和端口后，这里会自动拼出完整地址"></div>
       <details class="advanced">
-        <summary>高级：直接填完整地址（可选）</summary>
-        <p class="hint">如果你已经有一个完整地址，可以直接粘贴在这里，上面主机、路径、端口和加密开关会自动跟着拆开。</p>
-        <input id="srvUrl" placeholder="例如：http://192.168.1.10:8096">
+        <summary>高级设置（可选）</summary>
+        <div class="field"><span class="field-label">加密连接</span><label class="switch-row"><input type="checkbox" id="srvModalHttps"><span class="switch-text">开启后用加密连接（一般家里服务器保持关闭）</span></label></div>
+        <div class="field"><span class="field-label">备注</span><input id="srvModalRemark" placeholder="备注（可选，例如：客厅常用）"></div>
+        <div class="field"><span class="field-label">密钥</span><input id="srvModalApiKey" placeholder="密钥（可选，填了就不用账号密码登录）"></div>
+        <label class="check-row"><input type="checkbox" id="srvModalPrivate"> 设为私密服务器（不进聚合搜索和聚合视界）</label>
+        <div class="field"><span class="field-label">完整地址</span><input id="srvModalUrl" placeholder="直接粘贴完整地址也行，例如：http://192.168.1.10:8096"></div>
+        <h3 class="card-title">备用线路 <span id="srvModalLinesCount" class="count">0 条</span></h3>
+        <div id="srvModalLinesList" class="line-list"></div>
+        <div class="field"><span class="field-label">新线路</span><div class="password-row"><input id="srvModalLineInput" placeholder="例如：http://另一条线路地址:8096"><button type="button" id="srvModalLineAddBtn" class="btn-soft">添加线路</button></div></div>
       </details>
     </div>
-
-    <!-- 卡片 3：登录信息 -->
-    <div class="card-form">
-      <h3 class="card-title">登录信息</h3>
-      <div class="field"><span class="field-label">用户</span><input id="srvUser" placeholder="你的影视账号用户名"></div>
-      <div class="field"><span class="field-label">密码</span><div class="password-row"><input id="srvPass" type="password" placeholder="你的影视账号密码"><button type="button" id="srvPassToggle" class="btn-eye" aria-label="显示或隐藏密码">👁</button></div></div>
-      <div class="field"><span class="field-label">密钥</span><input id="srvApiKey" placeholder="密钥（可选，填了就不用账号密码登录）"></div>
-      <label class="check-row"><input type="checkbox" id="srvPrivate"> 设为私密服务器（不进聚合搜索和聚合视界）</label>
+    <p id="modalLoginStatus" class="status" role="status"></p>
+    <div class="modal-actions">
+      <button id="modalTestBtn" class="btn-soft">测试连接</button>
+      <button id="modalCancelBtn" class="btn-soft">取消</button>
+      <button id="modalLoginBtn" class="btn-primary">登录</button>
     </div>
-
-    <!-- 卡片 4：备用线路 -->
-    <div class="card-form">
-      <h3 class="card-title">备用线路 <span id="srvLinesCount" class="count">0 条</span></h3>
-      <p class="hint">主线路连不上时，可以手动切换到备用线路。点“添加线路”一条一条加，不用再用逗号拼在一起。</p>
-      <div id="srvLinesList" class="line-list"></div>
-      <div class="field"><span class="field-label">新线路</span><div class="password-row"><input id="srvLineInput" placeholder="例如：http://另一条线路地址:8096"><button type="button" id="srvLineAddBtn" class="btn-soft">添加线路</button></div></div>
-    </div>
-
-    <div class="action-row">
-      <button id="testConnectionBtn" class="btn-soft">测试连接</button>
-      <button id="addServerBtn" class="btn-primary">添加并登录</button>
-      <button id="saveServersBtn" class="btn-soft">仅保存服务器列表</button>
-    </div>
-    <p id="loginStatus" class="status" role="status"></p>
-
-    <h2>已添加的服务器</h2>
-    <div id="serverList" class="server-list"></div>
-
-    <h2>播放器设置</h2>
-    <div class="card-form">
-      <div class="field"><span class="field-label">播放器路径</span><input id="mpvPath" placeholder="留空 = 用内置播放器"></div>
-      <p class="hint">内置播放器就是随软件自带的 mpv 播放器，留空就能用。只有想用自己另外装的播放器时，才需要在这里填路径，例如你电脑上另外装的播放器程序位置。</p>
-      <div class="field"><span class="field-label">画质增强文件</span><input id="anime4kPath" placeholder="例如：你自己下载的画质增强文件位置，留空则不用"></div>
-      <p class="hint">画质增强（Anime4K）需要你自己准备增强文件，填在这里才会生效，不填也能正常看。</p>
-      <label class="check-row"><input type="checkbox" id="hdrToggle"> 开启高动态范围色调映射（让亮的地方不过曝、暗的地方看得清）</label>
-      <div class="field"><span class="field-label">外部播放器</span><input id="extPlayerPath" placeholder="例如：你电脑上另外装的播放器程序位置"></div>
-      <p class="hint">外部播放器是指跳出本软件、用你电脑上别的播放器打开，例如 PotPlayer、VLC，不填就不启用。</p>
-      <div class="field"><span class="field-label">弹幕来源</span><input id="danmakuUrl" placeholder="你的弹幕来源地址，留空则没有弹幕"></div>
-      <p class="hint">弹幕需要你自己提供来源地址，软件不内置任何弹幕来源。</p>
-      <div class="field"><span class="field-label">跳过片头秒数</span><input id="skipIntroSec" type="number" value="85"></div>
-      <p class="hint">点“跳过片头”时一次往后跳多少秒，默认 85 秒。</p>
-    </div>
-
-    <h2>字幕样式（主字幕 + 次字幕）</h2>
-    <div class="card-form">
-      <div class="field"><span class="field-label">字幕字号</span><input id="subSize" type="number" value="22"></div>
-      <div class="field"><span class="field-label">字幕位置</span><input id="subBottom" type="number" value="60"></div>
-      <p class="hint">字幕位置是指字幕离画面底部的距离，单位是像素，数字越大离底部越远。</p>
-      <div class="field"><span class="field-label">字幕颜色</span><input id="subColor" value="#ffffff"></div>
-    </div>
-
-    <h2>观看记录同步（你自己的账号）</h2>
-    <div class="card-form">
-      <p class="hint">这里不内置任何账号。去 Trakt（一个看剧记录网站）官网申请你自己的应用后，把下面的编号和令牌填进来，点“同步已看”才会调用 Trakt。</p>
-      <div class="field"><span class="field-label">客户端编号</span><input id="traktClientId" placeholder="你在 Trakt 申请到的客户端编号"></div>
-      <div class="field"><span class="field-label">访问令牌</span><div class="password-row"><input id="traktToken" type="password" placeholder="你在 Trakt 申请到的访问令牌"><button type="button" id="traktTokenToggle" class="btn-eye" aria-label="显示或隐藏访问令牌">👁</button></div></div>
-      <button id="traktSyncBtn" class="btn-soft">同步已看记录</button>
-    </div>
-
-    <h2>备份与还原设置（你自己的网盘）</h2>
-    <div class="card-form">
-      <p class="hint">备份文件只写到你自己的网盘，文件名是 greenvibe-settings.json。网盘是指支持 WebDAV（一种网盘同步协议）的服务。</p>
-      <div class="field"><span class="field-label">网盘地址</span><input id="webdavUrl" placeholder="例如：https://你的网盘地址/"></div>
-      <div class="field"><span class="field-label">网盘用户名</span><input id="webdavUser" placeholder="你的网盘用户名"></div>
-      <div class="field"><span class="field-label">网盘密码</span><div class="password-row"><input id="webdavPass" type="password" placeholder="你的网盘密码"><button type="button" id="webdavPassToggle" class="btn-eye" aria-label="显示或隐藏网盘密码">👁</button></div></div>
-      <div class="action-row">
-        <button id="webdavBackupBtn" class="btn-soft">备份设置到网盘</button>
-        <button id="webdavRestoreBtn" class="btn-soft">从网盘还原设置</button>
-      </div>
-    </div>
-    <p id="settingsStatus" class="hint"></p>
-  </section>
-</main>
+  </div>
+</div>
 
 <div id="detailModal" class="modal hidden">
   <div class="modal-box">

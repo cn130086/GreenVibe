@@ -16,6 +16,7 @@
     skipPoints: loadJson(LS_SKIP, {}),
     demo: false,
     newLines: [],
+    favorites: loadJson('greenvibe.favorites', []),
     currentServerIndex: 0,
     currentItem: null,
     currentSources: [],
@@ -108,12 +109,12 @@
     return t || '';
   }
   function setLoginStatus(text, kind) {
-    var el = $('loginStatus'); if (!el) return;
+    var el = $('modalLoginStatus'); if (!el) return;
     el.textContent = text || '';
     el.className = 'status' + (kind ? ' ' + kind : '');
   }
   function renderBackupLines() {
-    var list = $('srvLinesList'); if (!list) return;
+    var list = $('srvModalLinesList'); if (!list) return;
     list.innerHTML = '';
     state.newLines.forEach(function (l, i) {
       var d = document.createElement('div'); d.className = 'line-item';
@@ -122,11 +123,11 @@
       del.onclick = function () { state.newLines.splice(i, 1); renderBackupLines(); };
       d.appendChild(span); d.appendChild(del); list.appendChild(d);
     });
-    var c = $('srvLinesCount'); if (c) c.textContent = state.newLines.length + ' 条';
+    var c = $('srvModalLinesCount'); if (c) c.textContent = state.newLines.length + ' 条';
   }
   function syncUrlPreview() {
-    var url = composeServerUrl($('srvHost').value, $('srvPath').value, $('srvPort').value, $('srvHttps').checked);
-    if ($('srvUrlPreview')) $('srvUrlPreview').value = url;
+    var url = composeServerUrl($('srvModalHost').value, $('srvModalPath').value, $('srvModalPort').value, $('srvModalHttps').checked);
+    if ($('srvModalUrlPreview')) $('srvModalUrlPreview').value = url;
     return url;
   }
 
@@ -250,6 +251,8 @@
       }
       renderGrid($('resumeGrid'), resumeAll, srv);
       renderGrid($('latestGrid'), latestAll, srv);
+      if ($('aggResumeGrid')) renderGrid($('aggResumeGrid'), resumeAll, srv);
+      if ($('aggLatestGrid')) renderGrid($('aggLatestGrid'), latestAll, srv);
     } catch (e) {
       $('resumeGrid').innerHTML = '<p class="hint">加载失败：' + esc(e.message) + '（请检查服务器地址和登录状态）</p>';
     }
@@ -285,10 +288,16 @@
     var poster = item.demoVideo ? '' : '<img src="' + esc(imageUrl(srv, item)) + '" style="max-width:240px" onerror="this.remove()">';
     body.innerHTML = poster + '<h2>' + esc(item.Name) + '</h2><p>' + esc(item.Overview || '暂无简介') + '</p>' +
       '<p>类型：' + esc(typeLabel(item.Type)) + (item.ProductionYear ? ' · ' + item.ProductionYear : '') + '</p>' +
-      '<button id="detailPlay">▶ 播放</button> <button id="detailResume">从上次位置继续</button>';
+      '<button id="detailPlay">▶ 播放</button> <button id="detailResume">从上次位置继续</button> <button id="detailFav" class="btn-soft">' + (state.favorites.some(function (x) { return x.Id === item.Id; }) ? '已收藏，点击取消' : '收藏') + '</button>';
     $('detailModal').classList.remove('hidden');
     $('detailPlay').onclick = function () { $('detailModal').classList.add('hidden'); startPlayback(item, srv, 0); };
     $('detailResume').onclick = function () { $('detailModal').classList.add('hidden'); startPlayback(item, srv, ticksToSec(item.UserData && item.UserData.PlaybackPositionTicks)); };
+    $('detailFav').onclick = function () {
+      var idx = state.favorites.findIndex(function (x) { return x.Id === item.Id; });
+      if (idx >= 0) state.favorites.splice(idx, 1); else state.favorites.push({ Id: item.Id, Name: item.Name, Type: item.Type, ProductionYear: item.ProductionYear, Overview: item.Overview });
+      saveJson('greenvibe.favorites', state.favorites); renderFavorites();
+      this.textContent = state.favorites.some(function (x) { return x.Id === item.Id; }) ? '已收藏，点击取消' : '收藏';
+    };
   }
 
   // ---------- 字幕解析：SRT / VTT ----------
@@ -410,16 +419,30 @@
     $('playerModal').classList.add('hidden');
   }
 
+  function renderFavorites() {
+    if (!$('favGrid')) return;
+    var items = state.favorites || [];
+    if (!items.length) { $('favGrid').innerHTML = '<p class="hint">还没有收藏。去首页或媒体库点开一部片，点“收藏”就会出现在这里。</p>'; return; }
+    renderGrid($('favGrid'), items, currentServer());
+  }
+  function switchTab(tab) {
+    document.querySelectorAll('[data-tab]').forEach(function (x) { x.classList.remove('active'); });
+    document.querySelectorAll('.tab').forEach(function (x) { x.classList.remove('active'); });
+    document.querySelectorAll('[data-tab="' + tab + '"]').forEach(function (x) { x.classList.add('active'); });
+    var el = $('tab-' + tab); if (el) el.classList.add('active');
+    if (tab === 'home') loadHome();
+    if (tab === 'favorites') renderFavorites();
+    if (tab === 'aggregate') loadHome();
+    if (tab === 'library') loadLibrary();
+    if (tab === 'servers') refreshServerUI();
+  }
+
   // ---------- 事件绑定 ----------
-  document.querySelectorAll('.tabs button').forEach(function (b) {
-    b.onclick = function () {
-      document.querySelectorAll('.tabs button').forEach(function (x) { x.classList.remove('active'); });
-      document.querySelectorAll('.tab').forEach(function (x) { x.classList.remove('active'); });
-      b.classList.add('active'); $('tab-' + b.dataset.tab).classList.add('active');
-      if (b.dataset.tab === 'home') loadHome();
-      if (b.dataset.tab === 'library') loadLibrary();
-    };
-  });
+  document.querySelectorAll('[data-tab]').forEach(function (b) { b.onclick = function () { switchTab(b.dataset.tab); }; });
+  $('topSearchBtn').onclick = function () { $('searchInput').value = $('topSearchInput').value; switchTab('search'); doSearch(false); };
+  $('topSearchInput').addEventListener('keydown', function (e) { if (e.key === 'Enter') { $('searchInput').value = this.value; switchTab('search'); doSearch(false); } });
+  $('heroAddServerBtn').onclick = function () { openServerModal(); };
+  $('openServerModalBtn').onclick = function () { openServerModal(); };
   $('serverSelect').onchange = function () { state.currentServerIndex = Number(this.value); refreshServerUI(); loadHome(); };
   $('lineSelect').onchange = function () {
     var srv = state.servers[state.currentServerIndex]; if (!srv) return;
@@ -434,31 +457,36 @@
 
   function readServerForm() {
     var url = syncUrlPreview();
-    if (!url && $('srvUrl').value.trim()) {
-      var parsed = parseFullUrl($('srvUrl').value.trim());
-      $('srvHost').value = parsed.host; $('srvPath').value = parsed.path; $('srvPort').value = parsed.port; $('srvHttps').checked = parsed.https;
+    if (!url && $('srvModalUrl').value.trim()) {
+      var parsed = parseFullUrl($('srvModalUrl').value.trim());
+      $('srvModalHost').value = parsed.host; $('srvModalPath').value = parsed.path; $('srvModalPort').value = parsed.port; $('srvModalHttps').checked = parsed.https;
       url = syncUrlPreview();
     }
-    return { name: $('srvName').value.trim() || '影视服务器', remark: $('srvRemark').value.trim(), url: url, username: $('srvUser').value.trim(), password: $('srvPass').value, apiKey: $('srvApiKey').value.trim(), private: $('srvPrivate').checked, lines: state.newLines.slice(), activeLine: 0 };
+    return { name: $('srvModalName').value.trim() || '影视服务器', remark: $('srvModalRemark').value.trim(), url: url, username: $('srvModalUser').value.trim(), password: $('srvModalPass').value, apiKey: $('srvModalApiKey').value.trim(), private: $('srvModalPrivate').checked, lines: state.newLines.slice(), activeLine: 0 };
   }
   function bindServerFormSync() {
     ['srvHost', 'srvPath', 'srvPort'].forEach(function (id) { $(id).addEventListener('input', syncUrlPreview); });
-    $('srvHttps').addEventListener('change', syncUrlPreview);
-    $('srvUrl').addEventListener('input', function () {
+    $('srvModalHttps').addEventListener('change', syncUrlPreview);
+    $('srvModalUrl').addEventListener('input', function () {
       var parsed = parseFullUrl(this.value.trim());
-      if (parsed.host) { $('srvHost').value = parsed.host; $('srvPath').value = parsed.path; $('srvPort').value = parsed.port; $('srvHttps').checked = parsed.https; syncUrlPreview(); }
+      if (parsed.host) { $('srvModalHost').value = parsed.host; $('srvModalPath').value = parsed.path; $('srvModalPort').value = parsed.port; $('srvModalHttps').checked = parsed.https; syncUrlPreview(); }
     });
-    $('srvLineAddBtn').onclick = function () {
-      var v = $('srvLineInput').value.trim(); if (!v) return;
+    $('srvModalLineAddBtn').onclick = function () {
+      var v = $('srvModalLineInput').value.trim(); if (!v) return;
       if (!/^https?:\/\//.test(v)) v = 'http://' + v;
-      state.newLines.push(v); $('srvLineInput').value = ''; renderBackupLines();
+      state.newLines.push(v); $('srvModalLineInput').value = ''; renderBackupLines();
     };
-    $('srvPassToggle').onclick = function () { var el = $('srvPass'); el.type = el.type === 'password' ? 'text' : 'password'; };
+    $('srvModalPassToggle').onclick = function () { var el = $('srvModalPass'); el.type = el.type === 'password' ? 'text' : 'password'; };
     $('traktTokenToggle').onclick = function () { var el = $('traktToken'); el.type = el.type === 'password' ? 'text' : 'password'; };
     $('webdavPassToggle').onclick = function () { var el = $('webdavPass'); el.type = el.type === 'password' ? 'text' : 'password'; };
   }
+  function openServerModal() { setLoginStatus('', ''); $('serverModal').classList.remove('hidden'); renderBackupLines(); syncUrlPreview(); }
+  function closeServerModal() { $('serverModal').classList.add('hidden'); }
+  $('serverModalClose').onclick = closeServerModal;
+  $('modalCancelBtn').onclick = closeServerModal;
+  $('serverModal').addEventListener('click', function (e) { if (e.target === this) closeServerModal(); });
   bindServerFormSync();
-  $('testConnectionBtn').onclick = async function () {
+  $('modalTestBtn').onclick = async function () {
     var srv = readServerForm();
     if (!srv.url) { setLoginStatus('请先填主机和端口，例如主机 line.xmsl.org、端口 80。', 'error'); return; }
     setLoginStatus('正在测试连接…', 'loading');
@@ -468,8 +496,8 @@
       setLoginStatus('连接成功：服务器名称 ' + (info.ServerName || '未知') + '，版本 ' + (info.Version || '未知') + '。接下来可以点“添加并登录”。', 'success');
     } catch (e) { setLoginStatus('服务器连不上：' + e.message + '。请先检查主机、端口和加密开关是否和你平时用的完全一致。', 'error'); }
   };
-  $('addServerBtn').onclick = async function () {
-    var btn = $('addServerBtn');
+  $('modalLoginBtn').onclick = async function () {
+    var btn = $('modalLoginBtn');
     var srv = readServerForm();
     if (!srv.url) { setLoginStatus('请先填主机和端口，例如主机 line.xmsl.org、端口 80。', 'error'); return; }
     if (!srv.apiKey && !srv.username) { setLoginStatus('请先填用户名，或者填密钥（可选）。', 'error'); return; }
@@ -478,11 +506,11 @@
     try {
       await loginServer(srv);
       state.servers.push(srv); saveJson(LS_SERVERS, state.servers); state.currentServerIndex = state.servers.length - 1; state.newLines = [];
-      refreshServerUI(); setLoginStatus('登录成功，已添加服务器“' + srv.name + '”。', 'success'); loadHome();
+      refreshServerUI(); closeServerModal(); setLoginStatus('登录成功，已添加服务器“' + srv.name + '”。', 'success'); loadHome();
     } catch (e) { setLoginStatus('登录失败：' + e.message + '。请检查用户名和密码是否和你平时用的完全一致（区分大小写），也可以先点“测试连接”确认服务器本身通不通。', 'error'); }
     btn.disabled = false; btn.textContent = oldText;
   };
-  $('saveServersBtn').onclick = function () { saveSettingsFromForm(); setLoginStatus('设置已保存到本机（还没有登录，点“添加并登录”才会验证账号）。', 'success'); };
+  if ($('saveServersBtn')) $('saveServersBtn').onclick = function () { saveSettingsFromForm(); setLoginStatus('设置已保存到本机（还没有登录，点“添加并登录”才会验证账号）。', 'success'); };
   $('topSaveBtn').onclick = function () { saveSettingsFromForm(); setLoginStatus('已保存。', 'success'); };
 
   // 播放器控制
