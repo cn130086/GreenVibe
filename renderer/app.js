@@ -465,27 +465,31 @@
     return { name: $('srvModalName').value.trim() || '影视服务器', remark: $('srvModalRemark').value.trim(), url: url, username: $('srvModalUser').value.trim(), password: $('srvModalPass').value, apiKey: $('srvModalApiKey').value.trim(), private: $('srvModalPrivate').checked, lines: state.newLines.slice(), activeLine: 0 };
   }
   function bindServerFormSync() {
-    ['srvHost', 'srvPath', 'srvPort'].forEach(function (id) { $(id).addEventListener('input', syncUrlPreview); });
-    $('srvModalHttps').addEventListener('change', syncUrlPreview);
-    $('srvModalUrl').addEventListener('input', function () {
+    // 注意：这里以前写错了控件 ID（srvHost/srvPath/srvPort 根本不存在），
+    // 第一个不存在的控件一调 addEventListener 就会抛错，整个脚本在
+    // “测试连接 / 登录”按钮绑定之前就中断了，所以点按钮完全没反应。
+    // 修法：用弹窗里真实的 ID，并且每个控件先判空，缺一个也不能拖垮登录按钮。
+    ['srvModalHost', 'srvModalPath', 'srvModalPort'].forEach(function (id) { var el = $(id); if (el) el.addEventListener('input', syncUrlPreview); });
+    var httpsEl = $('srvModalHttps'); if (httpsEl) httpsEl.addEventListener('change', syncUrlPreview);
+    var urlEl = $('srvModalUrl'); if (urlEl) urlEl.addEventListener('input', function () {
       var parsed = parseFullUrl(this.value.trim());
       if (parsed.host) { $('srvModalHost').value = parsed.host; $('srvModalPath').value = parsed.path; $('srvModalPort').value = parsed.port; $('srvModalHttps').checked = parsed.https; syncUrlPreview(); }
     });
-    $('srvModalLineAddBtn').onclick = function () {
+    var lineBtn = $('srvModalLineAddBtn'); if (lineBtn) lineBtn.onclick = function () {
       var v = $('srvModalLineInput').value.trim(); if (!v) return;
       if (!/^https?:\/\//.test(v)) v = 'http://' + v;
       state.newLines.push(v); $('srvModalLineInput').value = ''; renderBackupLines();
     };
-    $('srvModalPassToggle').onclick = function () { var el = $('srvModalPass'); el.type = el.type === 'password' ? 'text' : 'password'; };
-    $('traktTokenToggle').onclick = function () { var el = $('traktToken'); el.type = el.type === 'password' ? 'text' : 'password'; };
-    $('webdavPassToggle').onclick = function () { var el = $('webdavPass'); el.type = el.type === 'password' ? 'text' : 'password'; };
+    var passT = $('srvModalPassToggle'); if (passT) passT.onclick = function () { var el = $('srvModalPass'); el.type = el.type === 'password' ? 'text' : 'password'; };
+    var traktT = $('traktTokenToggle'); if (traktT) traktT.onclick = function () { var el = $('traktToken'); el.type = el.type === 'password' ? 'text' : 'password'; };
+    var davT = $('webdavPassToggle'); if (davT) davT.onclick = function () { var el = $('webdavPass'); el.type = el.type === 'password' ? 'text' : 'password'; };
   }
   function openServerModal() { setLoginStatus('', ''); $('serverModal').classList.remove('hidden'); renderBackupLines(); syncUrlPreview(); }
   function closeServerModal() { $('serverModal').classList.add('hidden'); }
   $('serverModalClose').onclick = closeServerModal;
   $('modalCancelBtn').onclick = closeServerModal;
   $('serverModal').addEventListener('click', function (e) { if (e.target === this) closeServerModal(); });
-  bindServerFormSync();
+  try { bindServerFormSync(); } catch (e) { console.error('服务器表单绑定失败（登录按钮仍会继续绑定）：', e); }
   $('modalTestBtn').onclick = async function () {
     var srv = readServerForm();
     if (!srv.url) { setLoginStatus('请先填主机和端口，例如主机 line.xmsl.org、端口 80。', 'error'); return; }
