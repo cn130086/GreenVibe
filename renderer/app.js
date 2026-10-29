@@ -12,7 +12,7 @@
 
   var state = {
     servers: loadJson(LS_SERVERS, []),
-    settings: Object.assign({ mpvPath: 'mpv', anime4kPath: '', hdr: false, extPlayerPath: '', danmakuUrl: '', skipIntroSec: 85, subSize: 22, subBottom: 60, subColor: '#ffffff', traktClientId: '', traktToken: '', webdavUrl: '', webdavUser: '', webdavPass: '' }, loadJson(LS_SETTINGS, {})),
+    settings: Object.assign({ mpvPath: '', anime4kPath: '', hdr: false, extPlayerPath: '', danmakuUrl: '', skipIntroSec: 85, subSize: 22, subBottom: 60, subColor: '#ffffff', traktClientId: '', traktToken: '', webdavUrl: '', webdavUser: '', webdavPass: '' }, loadJson(LS_SETTINGS, {})),
     skipPoints: loadJson(LS_SKIP, {}),
     demo: false,
     currentServerIndex: 0,
@@ -131,7 +131,7 @@
   }
 
   function saveSettingsFromForm() {
-    state.settings.mpvPath = $('mpvPath').value || 'mpv';
+    state.settings.mpvPath = $('mpvPath').value || '';
     state.settings.anime4kPath = $('anime4kPath').value || '';
     state.settings.hdr = $('hdrToggle').checked;
     state.settings.extPlayerPath = $('extPlayerPath').value || '';
@@ -392,7 +392,7 @@
     if (!window.electronAPI) { $('playerStatus').textContent = '网页预览模式没有 mpv 桥接，请在 Electron 里打开本应用再点这个按钮。'; return; }
     var src = state.currentSources[state.currentSourceIndex] || {};
     var res = await window.electronAPI.playMpv({ url: streamUrl(item, srv, src, true), startSeconds: Math.floor(v.currentTime || 0), mpvPath: state.settings.mpvPath, anime4kShader: state.settings.anime4kPath, hdrToneMapping: state.settings.hdr, title: item.Name });
-    $('playerStatus').textContent = res.ok ? '已交给 mpv 播放（mpv 窗口关闭后会回到这里）' : 'mpv 启动失败：' + res.error + '（请检查 mpv 路径是否正确）';
+    $('playerStatus').textContent = res.ok ? '已交给内置 mpv 播放（mpv 窗口关闭后会回到这里）' : 'mpv 启动失败：' + res.error + '（内置 mpv 没找到时，请在设置里填自己装的 mpv 路径，或用内置播放器先看）';
   };
   $('extBtn').onclick = async function () {
     var item = state.currentItem; var srv = currentServer(); var src = state.currentSources[state.currentSourceIndex] || {};

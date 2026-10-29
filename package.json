@@ -1,15 +1,48 @@
 {
-  "author": "Original prototype",
-  "description": "Original, free Emby/Jellyfin player prototype (Electron + mpv). Uses only public Emby/Jellyfin REST APIs. No Hills code, assets or branding.",
-  "devDependencies": {
-    "electron": "^31.0.0"
-  },
-  "license": "MIT",
-  "main": "main.js",
-  "name": "greenvibe",
-  "scripts": {
-    "start": "electron .",
-    "start-web": "echo Open renderer/index.html in a browser for a quick look (demo mode works without Electron)"
-  },
-  "version": "0.1.0"
+    "author": "Original prototype",
+    "build": {
+        "appId": "com.greenvibe.player",
+        "directories": {
+            "output": "dist"
+        },
+        "files": [
+            "main.js",
+            "preload.js",
+            "renderer/**",
+            "icon.png",
+            "assets/icon.png",
+            "package.json"
+        ],
+        "productName": "GreenVibe",
+        "win": {
+            "icon": "build/icon.ico",
+            "target": [
+                "dir"
+            ]
+        },
+        "extraResources": [
+            {
+                "from": "resources/mpv",
+                "to": "mpv",
+                "filter": [
+                    "**/*"
+                ]
+            }
+        ]
+    },
+    "description": "Original, free Emby/Jellyfin player prototype (Electron + mpv). Uses only public Emby/Jellyfin REST APIs. No Hills code, assets or branding.",
+    "devDependencies": {
+        "electron": "^31.0.0",
+        "electron-builder": "^25.1.8"
+    },
+    "license": "MIT",
+    "main": "main.js",
+    "name": "greenvibe",
+    "scripts": {
+        "dist:win": "electron-builder --win portable",
+        "pack:win": "electron-builder --win dir --x64",
+        "start": "electron .",
+        "start-web": "echo Open renderer/index.html in a browser for a quick look (demo mode works without Electron)"
+    },
+    "version": "0.1.0"
 }

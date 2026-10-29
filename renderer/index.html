@@ -77,7 +77,7 @@
 
     <h2>播放器设置</h2>
     <div class="form">
-      <label>mpv 路径（Windows 示例：C:\Program Files\mpv\mpv.exe，留空则默认 mpv）<input id="mpvPath" placeholder="mpv"></label>
+      <label>mpv 路径（默认用内置 mpv，不用填；只有想用自己装的 mpv 时才填，例如：C:\Program Files\mpv\mpv.exe，留空 = 内置 mpv）<input id="mpvPath" placeholder="留空 = 内置 mpv"></label>
       <label>Anime4K shader 文件路径（你自己下载的 shader，留空则不用）<input id="anime4kPath" placeholder="例如：C:\shaders\Anime4K_Upscale_CNN_M.glsl"></label>
       <label><input type="checkbox" id="hdrToggle"> 开启 HDR 色调映射（mpv --tone-mapping）</label>
       <label>外部播放器路径（mpv / PotPlayer / VLC 可执行文件）<input id="extPlayerPath" placeholder="例如：C:\Program Files\VideoLAN\VLC\vlc.exe"></label>
@@ -140,7 +140,7 @@
       <button id="markIntroBtn">把当前位置记为片头结束</button>
       <button id="skipOutroBtn">跳到片尾前</button>
       <button id="nextEpBtn">下一集（已预加载则直接播）</button>
-      <button id="mpvBtn">用 mpv 播放（需本机装 mpv）</button>
+      <button id="mpvBtn">用内置 mpv 播放</button>
       <button id="extBtn">用外部播放器打开</button>
       <button id="downloadBtn">下载 / 磁盘缓存（服务器允许时）</button>
       <label>主字幕 <select id="subPrimarySelect"><option value="">无</option></select></label>

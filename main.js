@@ -31,10 +31,25 @@ app.whenReady().then(createWindow);
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 
-// ---- mpv 播放：只在用户本机已装 mpv 时启动，mpv 路径由用户在设置里自己填 ----
+// ---- 内置 mpv 查找顺序（Windows 打包版默认就是内置 mpv）----
+// 1) 用户在设置里填的自定义 mpv 路径（如果填了，就优先用它）
+// 2) 打包后内置 mpv：process.resourcesPath/mpv/mpv.exe（electron-builder extraResources）
+// 3) 开发模式内置 mpv：原型文件夹 resources/mpv/mpv.exe（Windows 版）
+// 4) 都找不到，才回退到系统 PATH 里的 mpv（命令名 mpv），找不到则由调用方报错
+function resolveMpvPath(userPath) {
+  if (userPath && userPath !== 'mpv') return userPath;
+  const exeName = process.platform === 'win32' ? 'mpv.exe' : 'mpv';
+  const candidates = [];
+  try { if (app.isPackaged) candidates.push(path.join(process.resourcesPath, 'mpv', exeName)); } catch (e) {}
+  candidates.push(path.join(__dirname, 'resources', 'mpv', exeName));
+  for (const c of candidates) { try { if (fs.existsSync(c)) return c; } catch (e) {} }
+  return 'mpv';
+}
+
+// ---- mpv 播放：默认用内置 mpv，自定义路径可选，内置找不到才回退系统 mpv ----
 // 参数：{ url, startSeconds, subtitleFiles: [], anime4kShader, hdrToneMapping, title }
 ipcMain.handle('play-mpv', async (_event, opts) => {
-  const mpvPath = (opts && opts.mpvPath) || 'mpv';
+  const mpvPath = resolveMpvPath(opts && opts.mpvPath);
   const args = [];
   if (opts && opts.title) args.push('--title=' + opts.title);
   args.push('--fs'); // 全屏，可由用户按 Esc 退出
