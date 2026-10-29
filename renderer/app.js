@@ -136,19 +136,99 @@
     return server.baseUrl + '/Items/' + item.Id + '/Images/' + (type || 'Primary') + '?maxWidth=400&api_key=' + encodeURIComponent(server.token || server.apiKey || '');
   }
 
-  function renderGrid(el, items, server) {
+  // 海报兜底链：主海报 Primary -> 缩略图 Thumb -> 背景图 Backdrop -> 最后才显示片名文字。
+  // img 标签发不出 X-Emby-Authorization 头，所以仍用 api_key 查询参数 + 该影片所属服务器的地址/令牌。
+  window.gvPosterFallback = function (img) {
+    var steps = ['Primary', 'Thumb', 'Backdrop'];
+    var step = parseInt(img.dataset.step || '0', 10);
+    if (step >= steps.length - 1) {
+      var parent = img.parentNode;
+      img.remove();
+      if (parent) parent.textContent = img.dataset.name || '';
+      return;
+    }
+    img.dataset.step = String(step + 1);
+    img.src = img.dataset.base + '/Items/' + img.dataset.itemId + '/Images/' + steps[step + 1] + '?maxWidth=400&api_key=' + encodeURIComponent(img.dataset.token || '');
+  };
+
+  // Emby 有的接口返回 {Items:[...]}，有的（如 Latest）直接返回数组，统一归一化。
+  function itemsFrom(data) {
+    if (Array.isArray(data)) return data;
+    if (data && Array.isArray(data.Items)) return data.Items;
+    return [];
+  }
+  function setStatus(id, text) {
+    var el = $(id); if (el) el.textContent = text || '';
+  }
+
+  function renderGrid(el, items, server, emptyText) {
+    if (!el) return;
     el.innerHTML = '';
     (items || []).forEach(function (it) {
+      // 聚合列表里每部片可能来自不同服务器：海报和详情必须用它自己的服务器，
+      // 不能一律用当前选中的服务器，否则跨服务器的海报会 404 / 错图。
+      var itemServer = it._server || server;
       var div = document.createElement('div');
       div.className = 'card';
-      var poster = it.demoVideo ? '<div class="poster">' + esc(it.Name) + '</div>' :
-        '<div class="poster"><img src="' + esc(imageUrl(server, it)) + '" alt="" onerror="this.parentNode.textContent=\'' + esc(it.Name) + '\'"></div>';
+      var posterDiv = document.createElement('div');
+      posterDiv.className = 'poster';
+      if (it.demoVideo) {
+        posterDiv.textContent = it.Name;
+      } else if (itemServer) {
+        var img = document.createElement('img');
+        img.src = imageUrl(itemServer, it, 'Primary');
+        img.alt = '';
+        img.dataset.base = itemServer.baseUrl;
+        img.dataset.itemId = it.Id;
+        img.dataset.token = itemServer.token || itemServer.apiKey || '';
+        img.dataset.name = it.Name || '';
+        img.dataset.step = '0';
+        img.onerror = function () { window.gvPosterFallback(img); };
+        posterDiv.appendChild(img);
+      } else {
+        posterDiv.textContent = it.Name;
+      }
       var pos = it.UserData && it.UserData.PlaybackPositionTicks ? ' · 已看 ' + Math.round(ticksToSec(it.UserData.PlaybackPositionTicks) / 60) + ' 分钟' : '';
-      div.innerHTML = poster + '<div class="meta"><b>' + esc(it.Name) + '</b><br><small>' + esc(typeLabel(it.Type)) + (it.ProductionYear ? ' · ' + it.ProductionYear : '') + pos + '</small></div>';
-      div.onclick = function () { openDetail(it, server); };
+      var meta = document.createElement('div');
+      meta.className = 'meta';
+      meta.innerHTML = '<b>' + esc(it.Name) + '</b><br><small>' + esc(typeLabel(it.Type)) + (it.ProductionYear ? ' · ' + it.ProductionYear : '') + pos + '</small>';
+      div.appendChild(posterDiv);
+      div.appendChild(meta);
+      div.onclick = function () { openDetail(it, itemServer); };
       el.appendChild(div);
     });
-    if (!items || !items.length) el.innerHTML = '<p class="hint">暂无内容（演示模式请打开演示开关；真服务器请先在设置里添加并登录）。</p>';
+    if (!items || !items.length) {
+      // 已登录真服务器时不再说“演示开关/先登录”这种误导话；只有没登录时才提示去登录。
+      el.innerHTML = '<p class="hint">' + esc(emptyText || (server && server.token ? '这个分类下还没有内容。' : '还没有添加服务器，请先添加并登录。')) + '</p>';
+    }
+  }
+
+  // ---------- 分类（Views / 媒体库）----------
+  // GET /Users/{userId}/Views：Emby/Jellyfin 的媒体库分类（电影、剧集、音乐等）。
+  // 按服务器分别存，换服务器不串台；两种返回形状都兼容。
+  async function loadViews(srv) {
+    var raw = state.servers[state.currentServerIndex];
+    if (!raw || !raw.token) return [];
+    if (raw.views && raw.views.length) return raw.views;
+    var data = await api(srv, '/Users/' + srv.userId + '/Views');
+    var views = itemsFrom(data).map(function (v) { return { Id: v.Id, Name: v.Name, CollectionType: v.CollectionType || '' }; });
+    raw.views = views;
+    saveJson(LS_SERVERS, state.servers);
+    return views;
+  }
+  function populateLibCategory(views) {
+    var sel = $('libCategory'); if (!sel) return;
+    var prev = sel.value;
+    sel.innerHTML = '';
+    var all = document.createElement('option'); all.value = ''; all.textContent = '全部'; sel.appendChild(all);
+    (views || []).forEach(function (v) {
+      var o = document.createElement('option'); o.value = v.Id; o.textContent = v.Name; sel.appendChild(o);
+    });
+    if (prev && (views || []).some(function (v) { return v.Id === prev; })) sel.value = prev;
+  }
+  function viewNameById(views, id) {
+    var v = (views || []).filter(function (x) { return x.Id === id; })[0];
+    return v ? v.Name : '';
   }
 
   // ---------- 服务器管理 ----------
@@ -230,41 +310,113 @@
   // ---------- 浏览 / 搜索 ----------
   async function loadHome() {
     if (state.demo) {
+      setStatus('homeStatus', '演示模式：下面是演示数据，连上真服务器后会被真数据替换。');
       renderGrid($('resumeGrid'), DEMO_ITEMS.filter(function (x) { return x.UserData && x.UserData.PlaybackPositionTicks; }), null);
       renderGrid($('latestGrid'), DEMO_ITEMS, null);
+      if ($('homeViews')) $('homeViews').innerHTML = '';
       return;
     }
     var srv = currentServer();
-    if (!srv || !srv.token) { renderGrid($('resumeGrid'), [], srv); renderGrid($('latestGrid'), [], srv); return; }
+    if (!srv || !srv.token) {
+      setStatus('homeStatus', '还没有添加服务器，请先添加并登录。');
+      renderGrid($('resumeGrid'), [], srv);
+      renderGrid($('latestGrid'), [], srv);
+      if ($('homeViews')) $('homeViews').innerHTML = '';
+      return;
+    }
+    // 聚合视界：逐个非私密服务器取继续观看 + 最新，再汇总（单个失败不再悄悄吞掉，记下来报给用户）
+    var resumeAll = [], latestAll = [], homeErrors = [];
+    for (var i = 0; i < state.servers.length; i++) {
+      var s0 = state.servers[i]; if (s0.private) continue;
+      var sv = Object.assign({}, s0, { baseUrl: String(s0.url).replace(/\/$/, '') });
+      try {
+        var r = await api(sv, '/Users/' + sv.userId + '/Items/Resume?Limit=10&Fields=PrimaryImageAspectRatio,Overview');
+        var l = await api(sv, '/Users/' + sv.userId + '/Items/Latest?Limit=10&Fields=PrimaryImageAspectRatio,Overview');
+        itemsFrom(r).forEach(function (x) { x._server = sv; resumeAll.push(x); });
+        itemsFrom(l).forEach(function (x) { x._server = sv; latestAll.push(x); });
+      } catch (e) { homeErrors.push((s0.name || '服务器') + '：' + e.message); }
+    }
+    renderGrid($('resumeGrid'), resumeAll, srv, '还没有继续观看的内容。');
+    renderGrid($('latestGrid'), latestAll, srv, '还没有最新添加的内容。');
+    if ($('aggResumeGrid')) renderGrid($('aggResumeGrid'), resumeAll, srv, '还没有继续观看的内容。');
+    if ($('aggLatestGrid')) renderGrid($('aggLatestGrid'), latestAll, srv, '还没有最新添加的内容。');
+
+    // 按分类的海报墙：先取 Views，再逐个分类取最新 12 部；Latest 为空时回退到该分类的 Items 列表。
+    var views = [], viewItemsTotal = 0, viewErr = '';
     try {
-      // 聚合视界：逐个非私密服务器取继续观看 + 最新，再汇总
-      var resumeAll = [], latestAll = [];
-      for (var i = 0; i < state.servers.length; i++) {
-        var s0 = state.servers[i]; if (s0.private) continue;
-        var sv = Object.assign({}, s0, { baseUrl: String(s0.url).replace(/\/$/, '') });
-        try {
-          var r = await api(sv, '/Users/' + sv.userId + '/Items/Resume?Limit=10&Fields=PrimaryImageAspectRatio,Overview');
-          var l = await api(sv, '/Users/' + sv.userId + '/Items/Latest?Limit=10&Fields=PrimaryImageAspectRatio,Overview');
-          (r.Items || []).forEach(function (x) { x._server = sv; resumeAll.push(x); });
-          (l || []).forEach(function (x) { x._server = sv; latestAll.push(x); });
-        } catch (e) { /* 单个服务器失败不影响其他服务器 */ }
+      views = await loadViews(srv);
+    } catch (e) { viewErr = e.message; }
+    var homeViewsEl = $('homeViews');
+    if (homeViewsEl) {
+      homeViewsEl.innerHTML = '';
+      for (var vi = 0; vi < views.length; vi++) {
+        (function (view) {
+          var section = document.createElement('div');
+          var title = document.createElement('h2'); title.textContent = view.Name; section.appendChild(title);
+          var grid = document.createElement('div'); grid.className = 'grid'; section.appendChild(grid);
+          var more = document.createElement('button'); more.className = 'btn-soft'; more.textContent = '查看全部';
+          more.onclick = function () {
+            populateLibCategory(views);
+            var sel = $('libCategory'); if (sel) sel.value = view.Id;
+            switchTab('library');
+          };
+          section.appendChild(more);
+          homeViewsEl.appendChild(section);
+          (async function () {
+            var items = [];
+            try {
+              var lat = await api(srv, '/Users/' + srv.userId + '/Items/Latest?ParentId=' + encodeURIComponent(view.Id) + '&Limit=12&Fields=PrimaryImageAspectRatio,Overview,ProductionYear,Genres,CommunityRating');
+              items = itemsFrom(lat);
+              if (!items.length) {
+                var lst = await api(srv, '/Users/' + srv.userId + '/Items?ParentId=' + encodeURIComponent(view.Id) + '&Recursive=true&Limit=12&Fields=PrimaryImageAspectRatio,Overview,ProductionYear,Genres,CommunityRating&SortBy=SortName');
+                items = itemsFrom(lst);
+              }
+            } catch (e) {
+              grid.innerHTML = '<p class="hint">这个分类加载失败：' + esc(e.message) + '</p>';
+              return;
+            }
+            items.forEach(function (x) { x._server = srv; });
+            viewItemsTotal += items.length;
+            renderGrid(grid, items, srv, '这个分类下还没有内容。');
+            // 该分类的实际条数出来后，刷新一次首页汇总文案
+            setStatus('homeStatus', '已加载 ' + views.length + ' 个分类，' + viewItemsTotal + ' 部影片' + (homeErrors.length ? '；部分服务器加载失败：' + homeErrors.join('；') : ''));
+          })();
+        })(views[vi]);
       }
-      renderGrid($('resumeGrid'), resumeAll, srv);
-      renderGrid($('latestGrid'), latestAll, srv);
-      if ($('aggResumeGrid')) renderGrid($('aggResumeGrid'), resumeAll, srv);
-      if ($('aggLatestGrid')) renderGrid($('aggLatestGrid'), latestAll, srv);
-    } catch (e) {
-      $('resumeGrid').innerHTML = '<p class="hint">加载失败：' + esc(e.message) + '（请检查服务器地址和登录状态）</p>';
+    }
+    if (viewErr) {
+      setStatus('homeStatus', '分类加载失败：' + viewErr + (homeErrors.length ? '；' + homeErrors.join('；') : ''));
+    } else if (!views.length) {
+      setStatus('homeStatus', '服务器没有返回任何分类（媒体库为空，或这个账号没有访问任何媒体库的权限）。' + (homeErrors.length ? '；' + homeErrors.join('；') : ''));
+    } else {
+      setStatus('homeStatus', '已加载 ' + views.length + ' 个分类' + (homeErrors.length ? '；部分服务器加载失败：' + homeErrors.join('；') : ''));
     }
   }
 
   async function loadLibrary() {
-    if (state.demo) { renderGrid($('libGrid'), DEMO_ITEMS, null); return; }
-    var srv = currentServer(); if (!srv || !srv.token) { renderGrid($('libGrid'), [], srv); return; }
+    if (state.demo) { setStatus('libStatus', '演示模式：下面是演示数据。'); renderGrid($('libGrid'), DEMO_ITEMS, null); return; }
+    var srv = currentServer(); if (!srv || !srv.token) { setStatus('libStatus', '还没有添加服务器，请先添加并登录。'); renderGrid($('libGrid'), [], srv); return; }
+    // 先取分类并填充下拉框，分类失败也要把原因报出来，而不是静默显示旧的“全部”。
+    var views = [];
+    try { views = await loadViews(srv); } catch (e) { setStatus('libStatus', '分类加载失败：' + e.message + '，先按“全部”显示。'); }
+    populateLibCategory(views);
     var type = $('libType').value;
-    var q = '/Users/' + srv.userId + '/Items?Recursive=true&Limit=50&Fields=PrimaryImageAspectRatio,Overview,ProductionYear&SortBy=SortName' + (type ? '&IncludeItemTypes=' + type : '');
-    try { var data = await api(srv, q); renderGrid($('libGrid'), data.Items || [], srv); }
-    catch (e) { $('libGrid').innerHTML = '<p class="hint">加载失败：' + esc(e.message) + '</p>'; }
+    var category = $('libCategory') ? $('libCategory').value : '';
+    var q;
+    if (category) {
+      q = '/Users/' + srv.userId + '/Items?ParentId=' + encodeURIComponent(category) + '&Recursive=true&Limit=100&Fields=PrimaryImageAspectRatio,Overview,ProductionYear,Genres,CommunityRating&SortBy=SortName' + (type ? '&IncludeItemTypes=' + type : '');
+    } else {
+      q = '/Users/' + srv.userId + '/Items?Recursive=true&Limit=50&Fields=PrimaryImageAspectRatio,Overview,ProductionYear&SortBy=SortName' + (type ? '&IncludeItemTypes=' + type : '');
+    }
+    try {
+      var data = await api(srv, q);
+      var items = itemsFrom(data);
+      renderGrid($('libGrid'), items, srv, '这个分类下还没有内容。');
+      setStatus('libStatus', '已加载 ' + items.length + ' 部影片' + (category ? '（分类：' + viewNameById(views, category) + '）' : '（分类：全部）'));
+    } catch (e) {
+      setStatus('libStatus', '加载失败：' + e.message);
+      $('libGrid').innerHTML = '<p class="hint">加载失败：' + esc(e.message) + '</p>';
+    }
   }
 
   async function doSearch(aggregated) {
@@ -285,7 +437,7 @@
     state.currentItem = item;
     var srv = server || currentServer();
     var body = $('detailBody');
-    var poster = item.demoVideo ? '' : '<img src="' + esc(imageUrl(srv, item)) + '" style="max-width:240px" onerror="this.remove()">';
+    var poster = item.demoVideo ? '' : '<img src="' + esc(imageUrl(srv, item)) + '" style="max-width:240px" data-base="' + esc(srv ? srv.baseUrl : '') + '" data-item-id="' + esc(item.Id) + '" data-token="' + esc(srv ? (srv.token || srv.apiKey || '') : '') + '" data-name="' + esc(item.Name) + '" data-step="0" onerror="window.gvPosterFallback(this)">';
     body.innerHTML = poster + '<h2>' + esc(item.Name) + '</h2><p>' + esc(item.Overview || '暂无简介') + '</p>' +
       '<p>类型：' + esc(typeLabel(item.Type)) + (item.ProductionYear ? ' · ' + item.ProductionYear : '') + '</p>' +
       '<button id="detailPlay">▶ 播放</button> <button id="detailResume">从上次位置继续</button> <button id="detailFav" class="btn-soft">' + (state.favorites.some(function (x) { return x.Id === item.Id; }) ? '已收藏，点击取消' : '收藏') + '</button>';
@@ -450,6 +602,8 @@
   };
   $('demoToggle').onchange = function () { state.demo = this.checked; loadHome(); loadLibrary(); };
   $('refreshLib').onclick = loadLibrary;
+  if ($('libCategory')) $('libCategory').onchange = loadLibrary;
+  if ($('libType')) $('libType').onchange = loadLibrary;
   $('searchBtn').onclick = function () { doSearch(false); };
   $('aggSearchBtn').onclick = function () { doSearch(true); };
   $('detailClose').onclick = function () { $('detailModal').classList.add('hidden'); };
