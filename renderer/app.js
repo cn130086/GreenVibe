@@ -647,19 +647,41 @@
     return info;
   }
 
+  function userIdParam(server) {
+    // 部分服务器/反代要求流地址里带 UserId 才放行，只带 api_key 会被拒绝；
+    // 没有 userId 时不拼，避免拼出 UserId=undefined 的坏地址。
+    return server && server.userId ? '&UserId=' + encodeURIComponent(server.userId) : '';
+  }
   function streamUrl(item, server, source, direct) {
     if (item.demoVideo) return item.demoVideo;
     var base = server.baseUrl;
     // 守卫：片源缺失时绝不能抛错（以前 source.Id 在 source 为 undefined 时会抛，
     // mpv/外部播放器/下载按钮拿到的就是 MediaSourceId=undefined 的坏地址）。
     var ms = (source && source.Id) ? '&MediaSourceId=' + encodeURIComponent(source.Id) : '';
-    if (direct) return base + '/Videos/' + item.Id + '/stream?Static=true' + ms + '&api_key=' + encodeURIComponent(server.token || '');
-    return base + '/Videos/' + item.Id + '/master.m3u8?' + (ms ? ms.slice(1) + '&' : '') + 'api_key=' + encodeURIComponent(server.token || '');
+    var uid = userIdParam(server);
+    if (direct) return base + '/Videos/' + item.Id + '/stream?Static=true' + ms + uid + '&api_key=' + encodeURIComponent(server.token || '');
+    return base + '/Videos/' + item.Id + '/master.m3u8?' + (ms ? ms.slice(1) + '&' : '') + (uid ? uid.slice(1) + '&' : '') + 'api_key=' + encodeURIComponent(server.token || '');
   }
   function hlsUrl(item, server, source) {
     if (item.demoVideo) return item.demoVideo;
     var ms = (source && source.Id) ? 'MediaSourceId=' + encodeURIComponent(source.Id) + '&' : '';
-    return server.baseUrl + '/Videos/' + item.Id + '/master.m3u8?' + ms + 'VideoCodec=h264&AudioCodec=aac&api_key=' + encodeURIComponent(server.token || '');
+    var uid = userIdParam(server);
+    return server.baseUrl + '/Videos/' + item.Id + '/master.m3u8?' + ms + (uid ? uid.slice(1) + '&' : '') + 'VideoCodec=h264&AudioCodec=aac&api_key=' + encodeURIComponent(server.token || '');
+  }
+  function directStreamUrl(item, server, source) {
+    // PlaybackInfo 返回的 DirectStreamUrl：可能是相对路径，也可能是完整地址。
+    // 相对路径拼上当前服务器地址；已有 api_key 就不动，没有就补上 api_key 和 UserId。
+    if (item.demoVideo || !source || !source.DirectStreamUrl) return '';
+    var raw = String(source.DirectStreamUrl);
+    var url = /^https?:\/\//i.test(raw) ? raw : server.baseUrl + (raw.charAt(0) === '/' ? raw : '/' + raw);
+    var sep = url.indexOf('?') >= 0 ? '&' : '?';
+    if (url.indexOf('api_key=') < 0) url += sep + 'api_key=' + encodeURIComponent(server.token || '');
+    if (server.userId && url.indexOf('UserId=') < 0) url += '&UserId=' + encodeURIComponent(server.userId);
+    return url;
+  }
+  function maskApiKey(url) {
+    // 在界面上显示流地址时，只把 api_key 的值换成 ***，绝不把真实令牌打出来。
+    return String(url || '').replace(/api_key=[^&\s]*/g, 'api_key=***');
   }
   function currentSource() {
     // 永远默认第 0 个片源：startPlayback 会把 currentSourceIndex 复位为 0，
@@ -979,16 +1001,38 @@
     // 状态先写“正在启动”，成功/失败在 IPC 返回后才写，绝不在 mpv 退出后才报成功。
     try { v.pause(); } catch (e) {}
     stopNetSpeedTimer();
-    setPlayerStatus('正在启动 mpv…（' + (src.Name || '') + '，' + sourceCodecText(src) + '）', 'loading');
     setNetSpeed('正在启动 mpv…');
-    var res = await window.electronAPI.playMpv({ url: streamUrl(item, srv, src, true), startSeconds: Math.floor(v.currentTime || 0), mpvPath: state.settings.mpvPath, anime4kShader: state.settings.anime4kPath, hdrToneMapping: state.settings.hdr, title: item.Name });
-    if (res.ok) {
+    // mpv 流地址兜底（退出码 2 修复）：mpv 退出码 2 = 传入的文件无法播放，
+    // 即 mpv 本身已启动、但播不了当前流地址。按顺序换地址再试，每种都写清
+    // 正在试哪一种、且只显示把 api_key 打码后的地址，绝不泄露真实令牌。
+    // 不换服务器地址，只换同一服务器上的流形式。
+    var candidates = [];
+    if (item.demoVideo) {
+      candidates.push({ label: '演示视频', url: item.demoVideo });
+    } else {
+      candidates.push({ label: '直连流', url: streamUrl(item, srv, src, true) });
+      candidates.push({ label: '转码流（HLS）', url: hlsUrl(item, srv, src) });
+      var directUrl = directStreamUrl(item, srv, src);
+      if (directUrl && directUrl !== candidates[0].url) candidates.push({ label: '服务器直连地址', url: directUrl });
+    }
+    var mpvOk = false, lastError = '';
+    for (var ci = 0; ci < candidates.length; ci++) {
+      var cand = candidates[ci];
+      setPlayerStatus('正在启动 mpv…正在试第 ' + (ci + 1) + ' 种流：' + cand.label + '（' + maskApiKey(cand.url) + '）（' + (src.Name || '') + '，' + sourceCodecText(src) + '）', 'loading');
+      var res = await window.electronAPI.playMpv({ url: cand.url, startSeconds: Math.floor(v.currentTime || 0), mpvPath: state.settings.mpvPath, anime4kShader: state.settings.anime4kPath, hdrToneMapping: state.settings.hdr, title: item.Name });
+      if (res.ok) { mpvOk = true; break; }
+      lastError = res.error || '未知原因';
+      if (ci + 1 < candidates.length) {
+        setPlayerStatus('mpv 用“' + cand.label + '”失败：' + lastError + '，正在换“' + candidates[ci + 1].label + '”再试…', 'loading');
+      }
+    }
+    if (mpvOk) {
       state.usingMpv = true;
       setPlayerStatus('mpv 已启动（独立窗口播放中，关闭 mpv 窗口后回到这里）。如果没有看到 mpv 窗口，请检查它是否被本应用窗口挡住、或在任务栏里。', 'success');
       setNetSpeed('已交给 mpv 播放，网速请看播放器窗口。');
     } else {
       state.usingMpv = false;
-      setPlayerStatus('mpv 启动失败：' + res.error + '（内置 mpv 没找到时，请在设置里填自己装的 mpv 路径，或用浏览器转码流先看）', 'error');
+      setPlayerStatus('mpv 启动失败（已试 ' + candidates.length + ' 种流都失败）：' + lastError + '（内置 mpv 没找到时，请在设置里填自己装的 mpv 路径，或用浏览器转码流先看）', 'error');
       setNetSpeed('mpv 启动失败，网速停止统计。');
     }
   };

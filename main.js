@@ -110,7 +110,23 @@ ipcMain.handle('play-mpv', async (_event, opts) => {
     if (!expected) expected = path.join(__dirname, 'resources', 'mpv', exeName);
     return { ok: false, error: '内置 mpv 文件没找到（打包里没有 ' + expected + '，请重新下载最新 GreenVibe 安装包；或在设置里填自己装的 mpv 路径）' };
   }
+  // mpv 日志（退出码 2 修复）：Windows GUI 版 mpv 的 stderr 管道经常是空的，
+  // 所以只靠 stderr 永远拿不到“为什么播不了”。改走 --log-file：每次启动前
+  // 先清空旧日志，启动后若在宽限期内退出，就读日志尾巴当作真实原因。
+  // 日志只写在本机 userData 目录，不发给任何服务器。
+  let mpvLogPath = '';
+  try {
+    const userDataDir = app.getPath('userData');
+    fs.mkdirSync(userDataDir, { recursive: true });
+    mpvLogPath = path.join(userDataDir, 'greenvibe-mpv.log');
+    fs.writeFileSync(mpvLogPath, 'GreenVibe mpv log started\n');
+  } catch (e) { mpvLogPath = ''; }
   const args = [];
+  // --no-config：避免用户自己的 mpv.conf 破坏播放；--log-file 让 GUI 版
+  // mpv 也能留下可读的失败原因；--msg-level=all=info 保证日志有足够细节。
+  args.push('--no-config');
+  if (mpvLogPath) args.push('--log-file=' + mpvLogPath);
+  args.push('--msg-level=all=info');
   if (opts && opts.title) args.push('--title=' + opts.title);
   args.push('--fs'); // 全屏，可由用户按 Esc 退出
   if (opts && Number(opts.startSeconds) > 0) args.push('--start=' + Number(opts.startSeconds));
@@ -147,11 +163,29 @@ ipcMain.handle('play-mpv', async (_event, opts) => {
     child.on('close', (code, signal) => {
       if (settled) return; // 宽限期已过、已报成功，关闭只是用户关了窗口。
       // 宽限期内就退出 = 根本没播起来（用户“从没见过 mpv 窗口”就是这种情况）。
-      const detail = String(stderrText || '').replace(/\s+/g, ' ').trim().slice(0, 500);
+      // 原因优先级：mpv 日志尾巴 > stderr > 明确说明日志读不到。
+      // 退出码 2 在 mpv 手册里就是“传入的文件无法播放”，即 mpv 本身已启动、
+      // 但播不了传给它的流地址——所以这里必须给日志原文，而不是一句笼统的话。
+      let logTail = '';
+      let logReadError = '';
+      if (mpvLogPath) {
+        try {
+          const raw = fs.readFileSync(mpvLogPath, 'utf8');
+          logTail = String(raw || '').replace(/\s+/g, ' ').trim().slice(-1000);
+        } catch (e) { logReadError = String(e && e.message || e); }
+      } else {
+        logReadError = '日志路径未能创建';
+      }
+      const stderrDetail = String(stderrText || '').replace(/\s+/g, ' ').trim().slice(0, 500);
+      const detail = logTail || stderrDetail;
+      const detailNote = detail
+        ? '（mpv 报错：' + detail + '）'
+        : '（mpv 没有输出报错，且 mpv 日志文件无法读取' + (logReadError ? '：' + logReadError : '') + '，日志路径：' + (mpvLogPath || '未知') + '，请检查播放地址和片源）';
       done({
         ok: false,
-        error: 'mpv 在启动后 ' + (code !== null ? '退出码 ' + code : '被信号 ' + signal + ' 终止') + '，没有真正开始播放' + (detail ? '（mpv 报错：' + detail + '）' : '（mpv 没有输出报错，请检查播放地址和片源）'),
+        error: 'mpv 在启动后 ' + (code !== null ? '退出码 ' + code : '被信号 ' + signal + ' 终止') + '，没有真正开始播放' + detailNote,
         mpvPath,
+        mpvLogPath: mpvLogPath || null,
         exitCode: code,
         signal: signal || null
       });
