@@ -215,6 +215,7 @@
       <div id="subPrimary" class="subtitle primary"></div>
       <div id="subSecondary" class="subtitle secondary"></div>
     </div>
+    <p id="playerStatus" class="status" role="status"></p>
     <div class="player-section">
       <div class="player-group">
         <button id="resumeBtn">从上次位置继续</button>
@@ -224,7 +225,7 @@
         <button id="nextEpBtn">下一集（已预加载则直接播）</button>
       </div>
       <div class="player-group">
-        <button id="mpvBtn" class="btn-soft">用内置播放器播放</button>
+        <button id="mpvBtn" class="btn-primary">▶ 用内置 mpv 播放（能播 HEVC / DTS / MKV，浏览器播不出来时点它）</button>
         <button id="extBtn" class="btn-soft">用外部播放器打开</button>
         <button id="downloadBtn" class="btn-soft">下载 / 磁盘缓存（服务器允许时）</button>
       </div>
@@ -239,7 +240,6 @@
         <label class="field-inline">本地弹幕文件<input type="file" id="localDanmakuFile" accept=".xml,.json"></label>
       </div>
       <p class="hint">自动跳过片头说明：Emby / Jellyfin 本身不自带片头检测，自动识别需要服务器装片头检测插件；没有插件时请用上面的手动按钮和“记为片头结束”。</p>
-      <p id="playerStatus" class="hint"></p>
     </div>
   </div>
 </div>

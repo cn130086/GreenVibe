@@ -23,6 +23,9 @@
     currentSourceIndex: 0,
     nextEpisode: null,
     nextPreloaded: null,
+    playbackMode: 'direct',
+    hlsTried: false,
+    playStallTimer: null,
     primaryCues: [], secondaryCues: [], danmakuItems: [],
     progressTimer: null,
     sessionId: 'greenvibe-' + Math.random().toString(36).slice(2, 10)
@@ -644,8 +647,71 @@
   function streamUrl(item, server, source, direct) {
     if (item.demoVideo) return item.demoVideo;
     var base = server.baseUrl;
-    if (direct) return base + '/Videos/' + item.Id + '/stream?Static=true&MediaSourceId=' + encodeURIComponent(source.Id) + '&api_key=' + encodeURIComponent(server.token || '');
-    return base + '/Videos/' + item.Id + '/master.m3u8?MediaSourceId=' + encodeURIComponent(source.Id) + '&api_key=' + encodeURIComponent(server.token || '');
+    // 守卫：片源缺失时绝不能抛错（以前 source.Id 在 source 为 undefined 时会抛，
+    // mpv/外部播放器/下载按钮拿到的就是 MediaSourceId=undefined 的坏地址）。
+    var ms = (source && source.Id) ? '&MediaSourceId=' + encodeURIComponent(source.Id) : '';
+    if (direct) return base + '/Videos/' + item.Id + '/stream?Static=true' + ms + '&api_key=' + encodeURIComponent(server.token || '');
+    return base + '/Videos/' + item.Id + '/master.m3u8?' + (ms ? ms.slice(1) + '&' : '') + 'api_key=' + encodeURIComponent(server.token || '');
+  }
+  function hlsUrl(item, server, source) {
+    if (item.demoVideo) return item.demoVideo;
+    var ms = (source && source.Id) ? 'MediaSourceId=' + encodeURIComponent(source.Id) + '&' : '';
+    return server.baseUrl + '/Videos/' + item.Id + '/master.m3u8?' + ms + 'VideoCodec=h264&AudioCodec=aac&api_key=' + encodeURIComponent(server.token || '');
+  }
+  function currentSource() {
+    // 永远默认第 0 个片源：startPlayback 会把 currentSourceIndex 复位为 0，
+    // 避免上一部片选了第 2 个片源、下一部片只有 1 个片源时取到 undefined。
+    return state.currentSources[state.currentSourceIndex] || state.currentSources[0] || {};
+  }
+  function sourceCodecText(src) {
+    if (!src || !src.Id) return '（服务器没有返回片源信息）';
+    var streams = src.MediaStreams || [];
+    var v = streams.filter(function (x) { return x.Type === 'Video'; })[0];
+    var a = streams.filter(function (x) { return x.Type === 'Audio'; })[0];
+    return '容器 ' + (src.Container || '未知') + ' · 视频 ' + (v ? (v.Codec || '未知') : (src.VideoCodec || '未知')) + ' · 音频 ' + (a ? (a.Codec || '未知') : '未知');
+  }
+  function setPlayerStatus(text, kind) {
+    var el = $('playerStatus'); if (!el) return;
+    el.textContent = text || '';
+    el.className = 'status' + (kind ? ' ' + kind : '');
+  }
+  function clearPlayWatchdog() { if (state.playStallTimer) { clearTimeout(state.playStallTimer); state.playStallTimer = null; } }
+  function describeVideoError(video) {
+    var e = video.error;
+    if (!e) return '浏览器没有给出具体错误代码';
+    if (e.code === 1) return '播放被中断（错误 1）';
+    if (e.code === 2) return '网络错误，流地址拿不到数据（错误 2，可能是 404/401 或反代没转发）';
+    if (e.code === 3) return '解码失败（错误 3，浏览器解不开这个编码，最常见是 HEVC / 10-bit / DTS / MKV）';
+    if (e.code === 4) return '浏览器不支持这个视频源（错误 4，容器或编码不受支持）';
+    return '浏览器视频错误（代码 ' + e.code + '）' + (e.message ? '：' + e.message : '');
+  }
+  function tryHlsFallback(reason) {
+    var item = state.currentItem, srv = currentServer();
+    if (!item || state.demo || state.hlsTried) return false;
+    state.hlsTried = true; state.playbackMode = 'hls';
+    var video = $('videoEl');
+    setPlayerStatus('浏览器直连播不出来（' + reason + '），正在自动换转码流（HLS，H.264 + AAC）再试一次…如果转码流也黑屏，请点上面绿色的“用内置 mpv 播放”。', 'loading');
+    video.src = hlsUrl(item, srv, currentSource());
+    video.play().catch(function (e) { setPlayerStatus('转码流也被浏览器拒绝：' + (e && e.message ? e.message : '未知原因') + '，请点上面绿色的“用内置 mpv 播放”。', 'error'); });
+    startPlayWatchdog();
+    return true;
+  }
+  function startPlayWatchdog() {
+    clearPlayWatchdog();
+    state.playStallTimer = setTimeout(function () {
+      var video = $('videoEl');
+      if (!video || video.readyState >= 3 || video.currentTime > 0 || !state.currentItem) return;
+      if (!tryHlsFallback('15 秒内一直没有画面，疑似卡住')) {
+        setPlayerStatus('播放一直没有画面：' + describeVideoError(video) + '。浏览器两种流都试过了，请点上面绿色的“用内置 mpv 播放”（mpv 能解 HEVC / DTS / MKV），或检查服务器网络。', 'error');
+      }
+    }, 15000);
+  }
+  function handleVideoError() {
+    var video = $('videoEl');
+    var reason = describeVideoError(video);
+    if (!tryHlsFallback(reason)) {
+      setPlayerStatus('浏览器播不出来：' + reason + '。这通常是片源编码浏览器不支持（HEVC / 10-bit / DTS / MKV 很常见），请点上面绿色的“用内置 mpv 播放”——mpv 能解这些编码；也可以换一个片源再试。', 'error');
+    }
   }
 
   async function preloadNextEpisode(item, server) {
@@ -669,14 +735,21 @@
 
   async function startPlayback(item, server, startSeconds) {
     state.currentItem = item;
+    // 关键修复：每部片都从第 0 个片源开始，否则上一部片的片源序号会带到下一部片，
+    // mpv / 外部播放器 / 下载按钮就会拿到 currentSources[undefined]，拼出 MediaSourceId=undefined 的坏地址。
+    state.currentSourceIndex = 0;
+    state.hlsTried = false;
+    state.playbackMode = 'direct';
+    clearPlayWatchdog();
     var srv = server || currentServer();
     var video = $('videoEl');
     $('playerTitle').textContent = item.Name || '播放中';
     $('playerModal').classList.remove('hidden');
-    $('playerStatus').textContent = '正在获取片源…';
+    setPlayerStatus('正在获取片源…', 'loading');
     try {
       var info = await fetchPlaybackInfo(item, srv);
       state.currentSources = info.MediaSources || item.MediaSources || [];
+      if (!state.currentSources.length) { setPlayerStatus('播放失败：服务器没有返回可用片源（MediaSources 为空），请检查这部片在服务器上是否可播、账号是否有权限。', 'error'); return; }
       var sel = $('sourceSelect'); sel.innerHTML = '';
       state.currentSources.forEach(function (s, i) { var o = document.createElement('option'); o.value = i; o.textContent = s.Name || ('片源 ' + (i + 1)); sel.appendChild(o); });
       var audioSel = $('audioSelect'); audioSel.innerHTML = '';
@@ -690,9 +763,10 @@
       var src = state.currentSources[0];
       var url = info.demoVideo || streamUrl(item, srv, src, true);
       video.src = url;
-      video.currentTime = startSeconds || 0;
-      video.play().catch(function () {});
-      $('playerStatus').textContent = '已加载片源：' + (src ? (src.Name || '') : '') + '（直连优先，播不出来请在片源里换一个，或点“用 mpv 播放”）';
+      try { video.currentTime = startSeconds || 0; } catch (e) {}
+      video.play().catch(function (e) { setPlayerStatus('浏览器播放被拒绝：' + (e && e.message ? e.message : '未知原因') + '，请点上面绿色的“用内置 mpv 播放”。', 'error'); });
+      startPlayWatchdog();
+      setPlayerStatus('正在用浏览器直连播放：' + (src.Name || '片源 1') + '（' + sourceCodecText(src) + '）。浏览器只擅长 H.264 + AAC，HEVC / 10-bit / DTS / MKV 很可能黑屏；播不出来会自动换转码流，仍不行请点上面绿色的“用内置 mpv 播放”。', 'loading');
       await preloadNextEpisode(item, srv);
       if (state.nextEpisode) $('playerStatus').textContent += ' · 下一集已预加载：' + state.nextEpisode.Name;
       // 弹幕来源
@@ -701,7 +775,7 @@
       clearInterval(state.progressTimer);
       state.progressTimer = setInterval(function () { reportProgress(false); }, 10000);
     } catch (e) {
-      $('playerStatus').textContent = '播放失败：' + e.message;
+      setPlayerStatus('播放失败：' + e.message + '（请先点“测试连接”确认服务器通，再点上面绿色的“用内置 mpv 播放”试一次）。', 'error');
     }
   }
 
@@ -716,6 +790,7 @@
   function closePlayer() {
     var video = $('videoEl');
     reportProgress(true);
+    clearPlayWatchdog();
     clearInterval(state.progressTimer);
     video.pause(); video.removeAttribute('src'); video.load();
     $('playerModal').classList.add('hidden');
@@ -834,24 +909,31 @@
   $('sourceSelect').onchange = function () {
     var item = state.currentItem; var srv = currentServer(); var idx = Number(this.value); state.currentSourceIndex = idx;
     var src = state.currentSources[idx]; if (!src) return;
-    var v = $('videoEl'); var t = v.currentTime; v.src = streamUrl(item, srv, src, true); v.currentTime = t; v.play().catch(function () {});
+    state.hlsTried = false; state.playbackMode = 'direct';
+    var v = $('videoEl'); var t = v.currentTime; v.src = streamUrl(item, srv, src, true); try { v.currentTime = t; } catch (e) {}
+    v.play().catch(function (e) { setPlayerStatus('浏览器播放被拒绝：' + (e && e.message ? e.message : '未知原因') + '，请点上面绿色的“用内置 mpv 播放”。', 'error'); });
+    startPlayWatchdog();
+    setPlayerStatus('已换片源：' + (src.Name || '') + '（' + sourceCodecText(src) + '），正在用浏览器直连播放。', 'loading');
   };
   $('mpvBtn').onclick = async function () {
     var item = state.currentItem; var srv = currentServer(); var v = $('videoEl');
-    if (!window.electronAPI) { $('playerStatus').textContent = '网页预览模式没有 mpv 桥接，请在 Electron 里打开本应用再点这个按钮。'; return; }
-    var src = state.currentSources[state.currentSourceIndex] || {};
+    if (!item || !srv) { setPlayerStatus('还没有可播的片，请先点一部片再点 mpv。', 'error'); return; }
+    if (!window.electronAPI) { setPlayerStatus('网页预览模式没有 mpv 桥接，请在 Electron 里打开本应用再点这个按钮。', 'error'); return; }
+    var src = currentSource();
+    if (!src.Id && !item.demoVideo) { setPlayerStatus('mpv 拿不到片源（服务器没有返回 MediaSource），请先重新点这部片再试。', 'error'); return; }
+    setPlayerStatus('正在交给内置 mpv 播放：' + (src.Name || '') + '（' + sourceCodecText(src) + '）。', 'loading');
     var res = await window.electronAPI.playMpv({ url: streamUrl(item, srv, src, true), startSeconds: Math.floor(v.currentTime || 0), mpvPath: state.settings.mpvPath, anime4kShader: state.settings.anime4kPath, hdrToneMapping: state.settings.hdr, title: item.Name });
-    $('playerStatus').textContent = res.ok ? '已交给内置 mpv 播放（mpv 窗口关闭后会回到这里）' : 'mpv 启动失败：' + res.error + '（内置 mpv 没找到时，请在设置里填自己装的 mpv 路径，或用内置播放器先看）';
+    setPlayerStatus(res.ok ? '已交给内置 mpv 播放（mpv 窗口关闭后会回到这里）' : 'mpv 启动失败：' + res.error + '（内置 mpv 没找到时，请在设置里填自己装的 mpv 路径，或用浏览器转码流先看）', res.ok ? 'success' : 'error');
   };
   $('extBtn').onclick = async function () {
-    var item = state.currentItem; var srv = currentServer(); var src = state.currentSources[state.currentSourceIndex] || {};
+    var item = state.currentItem; var srv = currentServer(); var src = currentSource();
     var url = streamUrl(item, srv, src, true);
     if (!window.electronAPI) { try { await navigator.clipboard.writeText(url); $('playerStatus').textContent = '已把播放地址复制到剪贴板，请粘贴到 PotPlayer / VLC 里打开。'; } catch (e) { $('playerStatus').textContent = '播放地址：' + url; } return; }
     var res = await window.electronAPI.launchExternal({ exePath: state.settings.extPlayerPath, url: url });
     $('playerStatus').textContent = res.ok ? '已交给外部播放器' : '外部播放器启动失败：' + res.error;
   };
   $('downloadBtn').onclick = async function () {
-    var item = state.currentItem; var srv = currentServer(); var src = state.currentSources[state.currentSourceIndex] || {};
+    var item = state.currentItem; var srv = currentServer(); var src = currentSource();
     var url = streamUrl(item, srv, src, true);
     if (window.electronAPI) { var res = await window.electronAPI.downloadVideo({ url: url, filename: (item.Name || 'video') + '.mp4' }); $('playerStatus').textContent = res.ok ? '已开始下载到：' + res.path : '下载失败：' + res.error; }
     else { var a = document.createElement('a'); a.href = url; a.download = (item.Name || 'video') + '.mp4'; a.click(); $('playerStatus').textContent = '已触发浏览器下载（服务器允许时才有效）。'; }
@@ -859,7 +941,7 @@
 
   // 字幕：主/次选择（从服务器取字幕文件并做自定义叠加显示）
   async function loadSubtitleTrack(index, isSecondary) {
-    var item = state.currentItem; var srv = currentServer(); var src = state.currentSources[state.currentSourceIndex] || {};
+    var item = state.currentItem; var srv = currentServer(); var src = currentSource();
     var sub = (state.currentSubs || [])[index]; if (!sub) { if (isSecondary) state.secondaryCues = []; else state.primaryCues = []; return; }
     try {
       // Emby 字幕流地址：优先用 DeliveryUrl，否则按常见格式拼
@@ -898,6 +980,12 @@
     }
   });
   $('videoEl').addEventListener('ended', function () { if (state.nextEpisode) { var srv = currentServer(); closePlayer(); startPlayback(state.nextEpisode, srv, 0); } });
+  // 播放诊断：以前这里没有任何 error 监听，play() 的错误又被 .catch(()=>{}) 吞掉，
+  // 所以失败时就是一块黑屏、0:00、没有任何提示。现在错误会先写进播放器状态栏，
+  // 直连失败自动换一次 HLS 转码流，两种都失败才提示用 mpv。
+  $('videoEl').addEventListener('error', function () { if (state.currentItem) handleVideoError(); });
+  $('videoEl').addEventListener('playing', function () { clearPlayWatchdog(); });
+  $('videoEl').addEventListener('canplay', function () { clearPlayWatchdog(); });
 
   // Trakt / WebDAV：只用用户自己的凭据
   $('traktSyncBtn').onclick = async function () {
